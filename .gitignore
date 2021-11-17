@@ -1,8 +1,4 @@
 xmltv*
 *.log
 cache*/
-*_bak*
 .DS_Store
-settings*
-zap2epg*.py*
-station_list*
