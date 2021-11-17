@@ -1,0 +1,25 @@
+<setting id="lineupcode">lineupId</setting>
+
+<setting id="device">-</setting>
+
+In order to edit the lineupcode and device settings for cable and satellite, without using the zap2epg addon in kodi, you will need to know how to use the inspect feature in your web browser. If you need to learn how to access the inspect panel - google it. Once you are ready - proceed with the instructions below.
+
+Open the zap2it tvlistings website in your browser
+
+Change your provider/zipcode to your lineup
+
+Open the Inspect Panel in your browser
+
+Click on the Network tab in the inspect panel
+
+Near the top of the name list you'll see a request starting with grid?lineupId= click on it
+
+In the headers tab look for the request url - it will look like this:
+
+https://tvlistings.gracenote.com/api/grid?lineupId=USA-CA04486-DEFAULT&timespan=2&headendId=CA04486&country=USA&device=X&postalCode=92101&isOverride=true&time=1516908600&pref=-&userId=-&aid=gapzap
+
+Copy the lineupId information to the lineupcode setting - in the above example that would be USA-CA04486-DEFAULT
+
+Copy the device information to the device setting - in the above example that would be X
+
+In general, the device setting for analog cable and satellite is -, for digital cable is X, and for digital rebuild is L
