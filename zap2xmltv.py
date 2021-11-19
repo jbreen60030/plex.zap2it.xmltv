@@ -2,6 +2,7 @@ import sys , getopt
 
 import os
 import logging
+import codecs
 
 import time  
 import datetime
@@ -69,7 +70,7 @@ def parseConfig ( xConfigFile ) :
     xlocalConfig = {}
     xConfigSettings = {
         "zapinfo" : 
-            {   "postal_code" : { "type" : "string" , "default" : "Required"} , 
+            {   "postal_code" : { "type" : "list" , "default" : "Required"} , 
                 "country" :     { "type" : "string" , "default" : "USA" , 
                                  "valid" : ["USA", "CAN"]} ,
                 "station_list" : { "type" : "string" , "default" : ""} , 
@@ -96,10 +97,12 @@ def parseConfig ( xConfigFile ) :
              {   "debug-grid" : {"type": "bool" , "default": "False"} 
              },
         "xdetails" : 
-            {   
+            {   "detail-parts" : { "type" : "list", "default" : "",
+                            "valid" : [ "ratings","date","myear","new","live",
+                                        "hd","cc","cast","season", "epis","episqts","prog","plot","descsort",
+                                        "bullet", "hyphen", "newLine", "space", "colon", "vbar", "slash","comma"] }
             },
-
-        }
+ }
 
 
     config = configparser.ConfigParser()
@@ -143,6 +146,29 @@ def parseConfig ( xConfigFile ) :
                 except:
                     print ("exception doing a get string for ", xSection, "-", xKey)
                     xlocalConfig[xKey] = xKeyList['default']    
+
+            if (xKeyList['type'] == 'list') : 
+                print ("processing list")
+                try:
+                    configList = config.get(xSection, xKey, fallback=xKeyList['default'])
+                    xlocalConfig[xKey] = []
+                    localList = configList.split(',')
+                    if 'valid' in xKeyList : 
+                        print ("validating list")
+                        validList = xKeyList['valid']
+                        pprint (validList)
+
+                        for thiskey in localList:
+                            if thiskey in validList : 
+                                xlocalConfig[xKey].append(thiskey)
+                            else :  
+                                xlocalConfig[xKey].append('unknown')
+                    else : 
+                        xlocalConfig[xKey] = localList
+                except :
+                    print ("exception doing a get/splitting a list for ", xSection, "-", xKey)
+                    xlocalConfig[xKey] = ""   
+
             if (xKeyList['type'] == 'required') : 
                 try:
                     xlocalConfig[xKey] = config.get(xSection, xKey, fallback=xKeyList['default']) 
@@ -351,37 +377,61 @@ def somethingelse() :
 if __name__ == '__main__':
 
     arglineDict = parseArgv(sys.argv[1:])
-
     userdata = os.getcwd()
-    log = os.path.join(userdata, arglineDict['logfile'])
-    logging.basicConfig(filename=log, filemode='w', format='%(asctime)s %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=logging.DEBUG)
+    try:
+        log = os.path.join(userdata, arglineDict['logfile'])
+        logging.basicConfig(filename=log, filemode='w', format='%(asctime)s %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=logging.DEBUG)
 
-    logging.info ('Starting zap2xmltv ')
+        logging.info ('Starting zap2xmltv ')
+    except OSError as e :
+        print ("Error initializing logging - %s" , e.strerror)
+        sys.exit(2)        
 
-
-    cacheDir = os.path.join(userdata, arglineDict['tempdir'])
-    if not os.path.exists(cacheDir):
-        os.mkdir(cacheDir)
+    try:
+        cacheDir = os.path.join(userdata, arglineDict['tempdir'])
+        if not os.path.exists(cacheDir):
+            os.mkdir(cacheDir)
+    except OSError as e : 
+        logging.exception("Unable to create tempdir directory %s - %s", cacheDir, e.strerror)
+        print ("Error creating cache directory - %s" , e.strerror)
+        sys.exit(2)        
 
     xConfig = {} 
     xConfig = parseConfig ( arglineDict['configfile'] )
 
-    logging.info ("Xconfig after all is done")
+    logging.info ("Configuration loaded. ")
     pprint (xConfig)
+    try:
+### command line parameter should overrid the config file
+        if 'outfile' not in arglineDict : 
+            xmlfile = os.path.join(userdata, xConfig['outfile'])
+        else :    
+            xmlfile = os.path.join(userdata, arglineDict['outfile'])
+
+        xmlencoding = 'utf-8'
+        xmlfh = codecs.open(xmlfile, 'w+b', encoding=xmlencoding)
+ 
+    except OSError as e : 
+        logging.error("Unable to create output file %s - %s", xmlfile, e.strerror)
+        print ("Error creating output file " , xmlfile , e.strerror)
+        sys.exit(2)        
+
 
     ##### Validate that all of the required parameters have a value.. 
     ##### As of now, defaults exist for everything except the postal_code
-    postalCodeList = xConfig['postal_code'].split( ",")
-    pprint (postalCodeList)
+    if xConfig['postal_code'][0] == 'Required' : ### which is the "default" 
+        logging.error ("Postal Code is a REQUIRED parameter in the configuration")
+        print ("Postal Code is a REQUIRED parameter in the configuration")
+        sys.exit(2)
 
-    print ("\n\n")
+#    postalCodeList = xConfig['postal_code'].split( ",")
 
     ## start at the beginning of the current hour. 
     gridtimeStart = int(time.time()) - int(time.time())%3600 
 
     ### Walk the current times, incrementing by "gridHourInc" number of hours, but do it so that we're 
     ### always hitting the same hours every day. This way we're not shifting by an hour or so every time this executes.
-    ### Presuming that this doesn't run at the same time daily.
+    ### That would create even more schedule files laying around in the tempdir...Presuming that this doesn't run at the same time daily.
     thisGridTime = gridtimeStart
     retrievedFilenamesList = []
 
@@ -391,7 +441,10 @@ if __name__ == '__main__':
     while thisGridTime <= gridtimeStart + (float(xConfig['retrieve_days']) * 24 * 3600) : 
         nextStart = (thisGridTime + (gridHourInc * 3600)) - ((thisGridTime + (gridHourInc * 3600))%(gridHourInc*3600))
         thisHours = int((nextStart - thisGridTime)/3600)
-        for thisPostalCode in postalCodeList : 
+
+        for thisPostalCode in xConfig['postal_code'] : 
+### And for each of the postal codes that were configured... Let's get a new grid file for this time slot.
+### Need to identify which ones are which or the file names will collide.
 
             filename = thisPostalCode.strip() + '-' + xConfig['lineupcode'].strip() + "-" + str(thisGridTime) + '.json.gz'
             fileDir = os.path.join(cacheDir, filename)
@@ -400,24 +453,35 @@ if __name__ == '__main__':
                    retrieveSaveGrid(fileDir, thisGridTime, thisHours , thisPostalCode.strip() , xConfig['lineupcode'], xConfig['device'] , xConfig['country'])
                 except OSError as e :
                     logging.warning('unable to retrive the grid when trying... error %s', e.strerror )
+### Save the file name if it exists or if we just created it 
             retrievedFilenamesList.append(fileDir)
+
         thisGridTime = nextStart
 
-    pprint (retrievedFilenamesList)
 
     overallDict ={} 
     total_events = 0 
     logged_events = 0
+
     if xConfig['lineupcode'] == 'lineupId' : 
         usingOTA = True 
     else :
         usingOTA = False
 
+    stationList = []
+    try: 
+        stationList = xConfig['station_list'].split(',')
+    except BaseException as e: 
+        print ("Error splitting up the list of stations - %s ", e.msg)
+        stationList = [] ### Make a null list
+
+    pprint (stationList)
+    pprint (retrievedFilenamesList)
+
     for gridFile in retrievedFilenamesList : 
-        print (gridFile)
         if os.path.exists(fileDir):
             try:
-        ### Open each file with gzip
+        ### Open each file with gzip since we saved it that way
                 with gzip.open(gridFile, 'rb') as f:
                     gridContent = f.read()
                     f.close()
@@ -429,37 +493,42 @@ if __name__ == '__main__':
             try:     
     ### parse the json 
                 gridJSON = json.loads(gridContent)
-                channel_count = len(gridJSON['channels'])
-                print (" file " , gridFile, ' has ' , channel_count, ' channel records  ')
-                for station in gridJSON['channels'] :
-    #### if the channelID is in stationlist, or station list is "" 
-                    if station['channelId'] in xConfig['station_list'] or xConfig['station_list'] == '': 
-    ####### IF  channel doesn't exist in the current schedule
-    #######      add the channel info
-                        if xConfig['debug-grid'] : 
-                            print ("next Station ID is " , station['channelId'] , " and call sign is ", station['callSign'] , " and channel num ", station['channelNo'])
-                        station_data = build_station_data(station, usingOTA) 
-                        station_key=station_data['info']['station_key']
+                pprint (xConfig['debug-grid'])
 
-                        if station_key not in overallDict:
-                            overallDict[station_key] = {}
-                            overallDict[station_key]['info']=station_data['info']
-                            overallDict[station_key]['station_listing'] = station_data['listing']
+                if xConfig['debug-grid'] : 
+                    print (" file " , gridFile, ' has ' , len(gridJSON['channels']) , ' channel records  ')
 
-                        for event in station['events']:
-    ####### get all the scheduled events for this channel
-    ####### convert start time to GMT and use that as a key... only 1 event at that time per channel
-                            thisEvent = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
-                            total_events+=1
-                            if thisEvent not in  overallDict[station_key] :
-    ####### if the event doesn't exist in the schedule (It may be because we have a 2nd postal code with same station)
-    #######   add the event to the schedule
-                                overallDict[station_key][thisEvent] = {}
-                                logged_events+=1
-                            else : 
-                                logging.info('not logging event %s-%s with station key of %s', str(thisEvent),event['seriesId'], station_key)
             except OSError as e  : 
                 logging.warning ('Exception occurred parsing JSON data in grid - %s - %s' , gridFile , e.strerror)
+### and ignore this file
+                pass 
+
+            for station in gridJSON['channels'] :
+#### if the channelID is in stationlist, or there is no station list (default is all stations represented by "" )
+                if station['channelId'] in stationList or stationList is None :   
+                    if xConfig['debug-grid'] : 
+                        print ("next Station ID is " , station['channelId'] , " and call sign is ", station['callSign'] , " and channel num ", station['channelNo'])
+                    station_data = build_station_data(station, usingOTA) 
+                    station_key=station_data['info']['station_key']
+####### IF  channel doesn't exist in the current schedule
+#######      add the channel info
+                    if station_key not in overallDict:
+                        overallDict[station_key] = {}
+                        overallDict[station_key]['info']=station_data['info']
+                        overallDict[station_key]['station_listing'] = station_data['listing']
+
+                    for event in station['events']:
+####### get all the scheduled events for this channel
+####### convert start time to GMT and use that as a key... only 1 event at that time per channel
+                        thisEvent = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
+                        total_events+=1
+                        if thisEvent not in  overallDict[station_key] :
+####### if the event doesn't exist in the schedule (It may be because we have a 2nd postal code with same station)
+#######   add the event to the schedule
+                            overallDict[station_key][thisEvent] = {}
+                            logged_events+=1
+                        else : 
+                            logging.info('not logging event %s-%s with station key of %s', str(thisEvent),event['seriesId'], station_key)
 
 
     print ("There are a total of ", len(overallDict), " stations when all folded together")
