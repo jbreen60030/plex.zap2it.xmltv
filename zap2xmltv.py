@@ -302,10 +302,46 @@ def massageGenres (EPfilter , EPgenre , EPlang, EPmatchLevel ) :
 
 '''
 
-def retrieveSaveGrid(saveFilename, gridtime, retrieveHours, postalCode, lineupCode, device , country ) :
+def retrieveallgrids ( retrieveDays , postalCodes , lineupCode, device , country , debug ) : 
+   ## start at the beginning of the current hour. 
+    gridHourInc = 4 
+    gridtimeStart = int(time.time()) - int(time.time())%3600 
+
+    ### Walk the current times, incrementing by "gridHourInc" number of hours, but do it so that we're 
+    ### always hitting the same hours every day. This way we're not shifting by an hour or so every time this executes.
+    ### That would create even more schedule files laying around in the tempdir...Presuming that this doesn't run at the same time daily.
+    thisGridTime = gridtimeStart
+    returnFilelist = []
+
+    if debug : retrieveDays = 0.124
+    if debug : gridHourInc = 1
+
+    while thisGridTime <= gridtimeStart + (float(retrieveDays) * 24 * 3600) : 
+        nextStart = (thisGridTime + (gridHourInc * 3600)) - ((thisGridTime + (gridHourInc * 3600))%(gridHourInc*3600))
+        thisHours = int((nextStart - thisGridTime)/3600)
+
+        for thisPostalCode in postalCodes : 
+### And for each of the postal codes that were configured... Let's get a new grid file for this time slot.
+### Need to identify which ones are which or the file names will collide.
+
+            filename = thisPostalCode.strip() + '-' + lineupCode.strip() + "-" + str(thisGridTime) + '.json.gz'
+            fileDir = os.path.join(cacheDir, filename)
+            if not os.path.exists(fileDir):
+                try:
+                   retrieveSaveGrid(fileDir, thisGridTime, thisHours , thisPostalCode.strip() , lineupCode, device , country , debug)
+                except OSError as e :
+                    logging.warning('unable to retrive the grid when trying... error %s', e.strerror )
+### Save the file name if it exists or if we just created it 
+            returnFilelist.append(fileDir)
+        thisGridTime = nextStart
+
+    return returnFilelist
+
+
+def retrieveSaveGrid(saveFilename, gridtime, retrieveHours, postalCode, lineupCode, device , country , debug ) :
     if not os.path.exists(saveFilename):
         try:
-            logging.info('Downloading guide data for: %s (%s)', str(gridtime),datetime.datetime.fromtimestamp(gridtime).strftime('%Y-%m-%d %H:%M:%S'))
+            logging.info('Downloading guide data for: %s  %s (%s)', postalCode, datetime.datetime.fromtimestamp(gridtime).strftime('%Y-%m-%d %H:%M:%S'), str(gridtime))
             url = 'http://tvlistings.zap2it.com/api/grid?lineupId=&timespan=' + str(retrieveHours) \
                             + '&headendId=' + lineupCode \
                             + '&country=' + country \
@@ -314,13 +350,13 @@ def retrieveSaveGrid(saveFilename, gridtime, retrieveHours, postalCode, lineupCo
                             + '&time=' + str(gridtime) \
                             + '&pref=-&userId=-' \
                             + '&languagecode=' + xConfig['language']
-            print ("URL will be ", url )
+            if debug : print ("URL will be ", url )
             saveContent = urllib.request.urlopen(url).read()
 
             try: 
                 if not os.path.exists(cacheDir):
                     os.mkdir(cacheDir)
-                print ("trying to save file ", saveFilename)
+                if debug : print ("trying to save file ", saveFilename)
                 with gzip.open(saveFilename,"wb+") as f:
                     f.write(saveContent)
                     f.close()
@@ -426,37 +462,14 @@ if __name__ == '__main__':
 
 #    postalCodeList = xConfig['postal_code'].split( ",")
 
-    ## start at the beginning of the current hour. 
-    gridtimeStart = int(time.time()) - int(time.time())%3600 
-
-    ### Walk the current times, incrementing by "gridHourInc" number of hours, but do it so that we're 
-    ### always hitting the same hours every day. This way we're not shifting by an hour or so every time this executes.
-    ### That would create even more schedule files laying around in the tempdir...Presuming that this doesn't run at the same time daily.
-    thisGridTime = gridtimeStart
     retrievedFilenamesList = []
+    retrievedFilenamesList = retrieveallgrids( xConfig['retrieve_days']  , \
+                                                xConfig['postal_code'] , \
+                                                xConfig['lineupcode'], \
+                                                xConfig['device'], \
+                                                xConfig['country'], \
+                                                xConfig['debug-grid'])
 
-    if xConfig['debug-grid'] : xConfig['retrieve_days'] = 0.124
-    if xConfig['debug-grid'] : gridHourInc = 1
-
-    while thisGridTime <= gridtimeStart + (float(xConfig['retrieve_days']) * 24 * 3600) : 
-        nextStart = (thisGridTime + (gridHourInc * 3600)) - ((thisGridTime + (gridHourInc * 3600))%(gridHourInc*3600))
-        thisHours = int((nextStart - thisGridTime)/3600)
-
-        for thisPostalCode in xConfig['postal_code'] : 
-### And for each of the postal codes that were configured... Let's get a new grid file for this time slot.
-### Need to identify which ones are which or the file names will collide.
-
-            filename = thisPostalCode.strip() + '-' + xConfig['lineupcode'].strip() + "-" + str(thisGridTime) + '.json.gz'
-            fileDir = os.path.join(cacheDir, filename)
-            if not os.path.exists(fileDir):
-                try:
-                   retrieveSaveGrid(fileDir, thisGridTime, thisHours , thisPostalCode.strip() , xConfig['lineupcode'], xConfig['device'] , xConfig['country'])
-                except OSError as e :
-                    logging.warning('unable to retrive the grid when trying... error %s', e.strerror )
-### Save the file name if it exists or if we just created it 
-            retrievedFilenamesList.append(fileDir)
-
-        thisGridTime = nextStart
 
 
     overallDict ={} 
@@ -479,7 +492,7 @@ if __name__ == '__main__':
     pprint (retrievedFilenamesList)
 
     for gridFile in retrievedFilenamesList : 
-        if os.path.exists(fileDir):
+        if os.path.exists(gridFile):
             try:
         ### Open each file with gzip since we saved it that way
                 with gzip.open(gridFile, 'rb') as f:
