@@ -8,5 +8,6 @@ This is expected to support
 
 	OTA, Cable and Satellite grid retrieval (only a single one)
 
+	User define number of days to purge to refresh grid info (cache everything else). Supporting the idea that the underlying source of data changes (mid-)day.
 	
 Use at your own risk. 
