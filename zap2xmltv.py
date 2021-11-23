@@ -28,6 +28,7 @@ def parseArgv(argv) :
     ### -o <outfile>   --outfile=<outfile>
     ### -d <what>      --debug=<what> (debug-grid)
     argvDict = {}
+    ### set defaults for the command line values so we don't have to test later.
     argvDict['configfile']  =   'zap2xmltv.ini'
     argvDict['tempdir']     =   'cache'
     argvDict['logfile']     =   'zap2xmltv.log'
@@ -337,7 +338,7 @@ def build_station_data(stationDict , OTA=True) :
     return_dict['listing'].append( ['icon' ,  'src="http:' + stationDict['thumbnail'].split('?')[0] + '"'])          
     return return_dict
 
-def parseEvents ( currentSchedule , newEvents, language ) :
+def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
 
 ### This is where all the heavy lifting happens. 
 
@@ -350,47 +351,176 @@ def parseEvents ( currentSchedule , newEvents, language ) :
 #        print ("new event")
  #       pprint(event)
 
+
 ###        total_events+=1
         if thisEvent not in currentSchedule and \
            thisEvent not in adddedEvents :
-    ####### if the event doesn't exist in the schedule (It may be because we have a 2nd postal code with same station
+    ####### if the event doesn't exist in the schedule (It might existbecause we have a 2nd postal code with same station
     ####### or more likely, it was in a previous parsed grid because it's a multi hour event that crosses grid boundaries)
     #######   add the event to the schedule
 
-                eventProginfo = event['program'] #### get the embedded prog info
-                if xConfig['extended'] : 
-                    extended_details = getExtendedDetails(eventProginfo.get('seriesId') , eventProginfo.get('tmsId') )
-                adddedEvents[thisEvent] = {}
-                adddedEvents[thisEvent]['startTime'] = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
-                adddedEvents[thisEvent]['endTime'] = str(calendar.timegm(time.strptime(event.get('endTime'), '%Y-%m-%dT%H:%M:%SZ')))
+            eventProginfo = event['program'] #### get the embedded prog info
+            if xConfig['extended'] : 
+                extended_details = getExtendedDetails(eventProginfo.get('seriesId') , eventProginfo.get('tmsId'), cacheLocation )
+                if extended_details['status']=='Retry' : 
+                    extended_details = getExtendedDetails(eventProginfo.get('seriesId') , eventProginfo.get('tmsId'), cacheLocation )
+                if extended_details['status'] != "OK" : extended_details['status']='FAIL'
 
-                adddedEvents[thisEvent]['4elements'] = []
-                adddedEvents[thisEvent]['4elements'].append( ["episode-num" , "system" , "dd_progid", \
-                                                str(eventProginfo.get('tmsId')[:-4] + "." + eventProginfo.get('tmsId')[-4:]) ] )
-                adddedEvents[thisEvent]['4elements'].append( ["title" , "lang" , language , eventProginfo.get('title') ] )
-                adddedEvents[thisEvent]['4elements'].append( ["sub-title", "lang" , language , eventProginfo.get('episodeTitle') ] )
-                if xConfig['extended'] == False : 
-                    adddedEvents[thisEvent]['4elements'].append ([ 'desc', "lang" , language , eventProginfo.get('shortDesc') ] )
-                adddedEvents[thisEvent]['4elements'].append( ["length", "units", "minutes", event.get('duration')])
-                if eventProginfo.get('season') is not None and eventProginfo.get('episode') is not None :
+            adddedEvents[thisEvent] = {}
+            adddedEvents[thisEvent]['startTime'] = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
+            adddedEvents[thisEvent]['endTime'] = str(calendar.timegm(time.strptime(event.get('endTime'), '%Y-%m-%dT%H:%M:%SZ')))
 
-                    adddedEvents[thisEvent]['4elements'].append( ["episode-num", "system", "onscreen" , \
-                                        str("S" + eventProginfo.get('season').zfill(2) + "E" + eventProginfo.get('episode').zfill(2) ) ] )
-                    adddedEvents[thisEvent]['4elements'].append( ["episode-num", "system", "xmltv_ns" , \
-                                        str(int(eventProginfo.get('season'))-1) + "." + str(int(eventProginfo.get('episode'))-1) + "."] )
-### Still need categories, description (with/without extended details) in this 4elements listing
-###                adddedEvents[thisEvent]['4elements'].append()
- ########################                              
-                if xConfig['icon'] == 'episode' : 
-                    adddedEvents[thisEvent]['icon'] = "https://zap2it.tmsimg.com/assets/" + event.get('thumbnail') + ".jpg"
-                if xConfig['icon'] == 'series' :     
-                    ### Comes from the SERIES file 
-                    adddedEvents[thisEvent]['icon'] = "series icon here"
+            adddedEvents[thisEvent]['4elements'] = []
+            adddedEvents[thisEvent]['4elements'].append( ["episode-num" , "system" , "dd_progid", \
+                                            str(eventProginfo.get('tmsId')[:-4] + "." + eventProginfo.get('tmsId')[-4:]) ] )
+            adddedEvents[thisEvent]['4elements'].append( ["title" , "lang" , language , eventProginfo.get('title') ] )
+            adddedEvents[thisEvent]['4elements'].append( ["sub-title", "lang" , language , eventProginfo.get('episodeTitle') ] )
+            if xConfig['extended'] == False : 
+                adddedEvents[thisEvent]['4elements'].append ([ 'desc', "lang" , language , eventProginfo.get('shortDesc') ] )
+            adddedEvents[thisEvent]['4elements'].append( ["length", "units", "minutes", event.get('duration')])
+            if eventProginfo.get('season') is not None and eventProginfo.get('episode') is not None :
+
+                adddedEvents[thisEvent]['4elements'].append( ["episode-num", "system", "onscreen" , \
+                                    str("S" + eventProginfo.get('season').zfill(2) + "E" + eventProginfo.get('episode').zfill(2) ) ] )
+                adddedEvents[thisEvent]['4elements'].append( ["episode-num", "system", "xmltv_ns" , \
+                                    str(int(eventProginfo.get('season'))-1) + "." + str(int(eventProginfo.get('episode'))-1) + "."] )
+    ### Still need categories, description (with/without extended details) in this 4elements listing
+    ###                adddedEvents[thisEvent]['4elements'].append()
+    ########################                              
+            if xConfig['icon'] == 'episode' : 
+                adddedEvents[thisEvent]['icon'] = "https://zap2it.tmsimg.com/assets/" + event.get('thumbnail') + ".jpg"
+            if xConfig['icon'] == 'series' :     
+                ### Comes from the SERIES file 
+                adddedEvents[thisEvent]['icon'] = "series icon here"
 
     return adddedEvents
 
-def getExtendedDetails ( episodeId, showID) :
+def getExtendedDetails ( showID, episodeId,  cacheLocation) :
+    episodeId = episodeId.lower()
+
     xDetails = {}
+    xDetails['status']='OK'
+
+    if showID not in showCache: 
+        logging.info('Adding series %s to showCache', showID)
+        filename = showID + '.json'
+        fileDir = os.path.join(cacheDir, filename)
+        showCache[showID] = {}
+        showCache[showID]['filename']= filename 
+        showCache[showID]['epcredits']= None
+        try:
+            if not os.path.exists(fileDir) and showID not in failList:
+                retry = 3
+                while retry > 0:
+                    logging.info('Downloading details data for: %s', showID)
+                    url = 'https://tvlistings.zap2it.com/api/program/overviewDetails'
+                    data = 'programSeriesID=' + showID
+                    data_encode = data.encode('utf-8')
+                    try:
+                        logging.info('downloading file %s', url )
+                        URLcontent = urllib.request.Request(url, data=data_encode)
+                        JSONcontent = urllib.request.urlopen(URLcontent).read()
+                        if JSONcontent:
+                            with open(fileDir,"wb+") as f:
+                                f.write(JSONcontent)
+                                f.close()
+                            retry = 0
+                        else:
+                            time.sleep(1)
+                            retry -= 1
+                            logging.warning('Retry downloading missing details data for: %s', showID)
+                    except urllib.error.URLError as e:
+                        time.sleep(1)
+                        retry -= 1
+                        logging.warning('Retry downloading details data for: %s  -  %s', showID, e)
+            if os.path.exists(fileDir):
+                try: 
+                    fileSize = os.path.getsize(fileDir)
+                    if fileSize > 0:
+                        try: 
+                            with open(fileDir, 'rb') as f:
+                                showDetails = json.loads(f.read())
+                                f.close()
+                            logging.info('Parsing %s', filename)
+                            showCache[showID]['seriesImage'] = showDetails.get('seriesImage')
+                            showCache[showID]['backgroundImage'] = showDetails.get('backgroundImage')
+                            showCache[showID]['credits'] = showDetails['overviewTab']
+                            genreString = showDetails.get('seriesGenres')
+                            if filename.startswith("MV"):
+                                genreString = 'Movie|' + genreString
+
+                            showCache[showID]['genreDict'] = genreString.split('|')
+                            showCache[showID]['stars'] = showDetails.get('starRating')
+                            episodelist = showDetails['upcomingEpisodeTab']
+                            TBAcheck = '' ## initialize it
+                            remove_file = False
+                            logging.info("Walking the upcoming episode list for %s", episodeId)
+                            thisAiring=''
+                            for airing in episodelist:
+                                try: 
+                                    logging.info("comparing %s to %s", episodeId, airing['tmsID'].lower())
+                                    if episodeId == airing['tmsID'].lower():
+                                        thisAiring = episodeId
+                                        if not showID.startswith("MV"):
+                                            try:
+                                                TBAcheck = airing.get('episodeTitle')
+                                            except : 
+                                                TBAcheck = '' 
+                                except :
+                                        logging.warning('Unable to compare episodeID with an airing')
+                            logging.info("end of list with episode = %s and found = %s", episodeId, thisAiring)
+                            if episodeId != thisAiring:  ## didn't find the episode in existing file
+                                del showCache[showID]
+                                xDetails['status']= 'Retry'
+                                remove_file = True
+                            else : 
+                                if TBAcheck != '' and "TBA" in TBAcheck:
+                                    logging.info('Deleting %s due to TBA listings', filename)
+                                    del showCache[showID]
+                                    remove_file = True
+
+                            if remove_file : 
+                                try : 
+                                    os.remove(fileDir)
+                                except OSError as e:
+                                    logging.warning('Error Deleting: %s - %s.' % (e.filename, e.strerror))
+                        except OSError as e:
+                            logging.warning('Error opening Series File : %s - %s.' % (e.filename, e.strerror))
+                except OSError as e : 
+                    logging.warning ("Unable to get size of the downloaded file %s - %s", e.filename, e.strerror)
+            else:
+                logging.warning('Could not download details data for: %s - skipping episode', EPseries)
+                failList.append(showID)
+                del showCache[showID]   # Delete from cache to indicate we failed.
+                xDetails['status']='FAIL'
+
+            if showID in showCache:  # it won't if the download failed.   
+                xDetails['seriesImage'] = showCache[showID]['seriesImage']
+                xDetails['backgroundImage'] = showCache[showID]['backgroundImage']
+                xDetails['credits'] = showCache[showID]['credits'] 
+                xDetails['genre'] = showCache[showID]['genreDict']
+
+                print ("airing from before still good?") 
+
+#                EPlist = showCache[EPseries]['upcomingEpisodeTab']
+#                EPid = edict['epid']
+#
+#                for airing in EPlist:
+#                    try: 
+#                        if EPid.lower() == airing['tmsID'].lower():
+#                            if not episode.startswith("MV"):
+#                                try:
+#                                    origDate = airing.get('originalAirDate')
+#                                    if origDate != '':
+#                                        EPoad = re.sub('Z', ':00Z', airing.get('originalAirDate'))
+#                                        edict['epoad'] = str(calendar.timegm(time.strptime(EPoad, '%Y-%m-%dT%H:%M:%SZ')))
+#                                except Exception as e:
+#                                    logging.exception('Could not parse oad for: %s - %s', episode, e)
+#                    except Exception as e:
+ #                           logging.exception(' Could not operate on OAD for %s ', EPseries )
+        except Exception as e:
+            logging.exception('Exception: parseXdetails %s', e.strerror)
+
 ### This is where we go and get Series/Movie info and pull some of that in , like episode icon, play with the categories, etc. 
 
     print (" in extended defails for episode ", episodeId , " for the show ", showID)
@@ -622,10 +752,18 @@ if __name__ == '__main__':
     else :
         usingOTA = False
 
+### just some global dictionaries/caches.
+
     scheduleDict ={} 
+    detailCache = {}
+    showCache = {}
+    failList = {}
+
     total_events = 0 
     logged_events = 0
+
     stationList = []
+
     try: 
         stationList = xConfig['station_list'].split(',')
     except BaseException as e: 
@@ -655,8 +793,9 @@ if __name__ == '__main__':
                         scheduleDict[station_key]['events'] = {}
 ###                    additionalEvents = {}
                     additionalEvents = parseEvents( scheduleDict[station_key] , \
-                                                    station['events'],
-                                                    xConfig['language'])
+                                                    station['events'],\
+                                                    xConfig['language'], \
+                                                    cacheDir)
 #                    print (" events that came back from parsing")
 #                    pprint (additionalEvents)
 
