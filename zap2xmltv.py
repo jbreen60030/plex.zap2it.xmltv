@@ -14,20 +14,13 @@ import gzip
 import json 
 import html
 from html import escape
-####import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 from pprint import pprint
 from collections import OrderedDict
 
-###print (type(config))
-###pprint(config.sections())
-'''
-for a in config.sections() : 
-    b = config[a]
 
-    for key in b : 
-        print ("section ", b, "  keyword " , key, " and value of ", b[key] )
-'''
 
 def parseArgv(argv) : 
     ### get the args that may have been passed
@@ -60,8 +53,6 @@ def parseArgv(argv) :
             argvDict['tempdir'] = arg
         elif opt in ("-l","--logfile") :
             argvDict['logfile'] = arg
-
-
     return argvDict
 
 
@@ -148,15 +139,15 @@ def parseConfig ( xConfigFile ) :
                     xlocalConfig[xKey] = xKeyList['default']    
 
             if (xKeyList['type'] == 'list') : 
-                print ("processing list")
+###                print ("processing list")
                 try:
                     configList = config.get(xSection, xKey, fallback=xKeyList['default'])
                     xlocalConfig[xKey] = []
                     localList = configList.split(',')
                     if 'valid' in xKeyList : 
-                        print ("validating list")
+###                        print ("validating list")
                         validList = xKeyList['valid']
-                        pprint (validList)
+###                        pprint (validList)
 
                         for thiskey in localList:
                             if thiskey in validList : 
@@ -179,14 +170,232 @@ def parseConfig ( xConfigFile ) :
                 try:
                     xlocalConfig[xKey] = config.getfloat(xSection, xKey, fallback=xKeyList['default']) 
                     if 'range' in xKeyList : 
-                        print ("FLOAT range check for " , xKey , " (" , float(xKeyList['range'][0]) , " - ", float(xKeyList['range'][1]) , ")")
-                        print (" INI value " , xlocalConfig[xKey] )
+###                        print ("FLOAT range check for " , xKey , " (" , float(xKeyList['range'][0]) , " - ", float(xKeyList['range'][1]) , ")")
+###                        print (" INI value " , xlocalConfig[xKey] )
                         if float(xlocalConfig[xKey]) < float(xKeyList['range'][0]) or float(xlocalConfig[xKey]) > float(xKeyList['range'][1]) :
                            xlocalConfig[xKey] = float(xKeyList['default'])  
                 except BaseException as err:
                     print(f"Unexpected {err=}, {type(err)=} testing an FLOAT for ", xSection, "-", xKey)
                     xlocalConfig[xKey] = xKeyList['default']    
     return xlocalConfig
+
+
+'''
+
+###  For finding Sports and determining Teams
+    xCompetitionSports=['Football' ,
+                        'Baseball'  ,
+                        'Hockey', 
+                        'Soccer' , 
+                        'Tennis' , 
+                        'Volleyball', 'Footvolley',
+                        'Boxing',
+                        'Auto racing', 
+                        'Mixed martial arts' ]
+
+'''
+def purgegrids(  cacheDir, purge_days, debug ): 
+
+    gridtimeStart = int(time.time()) - int(time.time())%3600 
+    logging.info('Checking for old cache files...')
+    try:
+        if os.path.exists(cacheDir):
+            entries = os.listdir(cacheDir)
+            for entry in entries:
+                oldfile = entry.split('.')[0]
+                if "-" in oldfile : 
+                    oldfile = oldfile.split('-')[2]
+                if oldfile.isdigit():
+                    fn = os.path.join(cacheDir, entry)
+                    if (int(oldfile)) < (gridtimeStart + (int(purge_days) * 86400)):
+                        try:
+                            os.remove(fn)
+                            logging.info('Deleting old cache: %s', entry)
+                        except OSError as e:
+                            logging.warning('Error Deleting: %s - %s.' % (e.filename, e.strerror))
+    except Exception as e:
+        logging.exception('Exception: deleteOldCache - %s', e.strerror)
+
+
+
+def retrieveallgrids ( retrieveDays , postalCodes , lineupCode, device , country , debug ) : 
+   ## start at the beginning of the current hour. 
+    gridHourInc = 4 
+    gridtimeStart = int(time.time()) - int(time.time())%3600 
+
+    ### Walk the current times, incrementing by "gridHourInc" number of hours, but do it so that we're 
+    ### always hitting the same hours every day. This way we're not shifting by an hour or so every time this executes.
+    ### That would create even more schedule files laying around in the tempdir...Presuming that this doesn't run at the same time daily.
+    thisGridTime = gridtimeStart
+    returnFilelist = []
+
+    if debug : retrieveDays = 0.124
+    if debug : gridHourInc = 1
+
+    while thisGridTime <= gridtimeStart + (float(retrieveDays) * 24 * 3600) : 
+        nextStart = (thisGridTime + (gridHourInc * 3600)) - ((thisGridTime + (gridHourInc * 3600))%(gridHourInc*3600))
+        thisHours = int((nextStart - thisGridTime)/3600)
+
+        for thisPostalCode in postalCodes : 
+### And for each of the postal codes that were configured... Let's get a new grid file for this time slot.
+### Need to identify which ones are which or the file names will collide.
+
+            filename = thisPostalCode.strip() + '-' + lineupCode.strip() + "-" + str(thisGridTime) + '.json.gz'
+            fileDir = os.path.join(cacheDir, filename)
+            if not os.path.exists(fileDir):
+                try:
+                   retrieveSaveGrid(fileDir, thisGridTime, thisHours , thisPostalCode.strip() , lineupCode, device , country , debug)
+                except OSError as e :
+                    logging.warning('unable to retrive the grid when trying... error %s', e.strerror )
+### Save the file name if it exists or if we just created it 
+            returnFilelist.append(fileDir)
+        thisGridTime = nextStart
+
+    return returnFilelist
+
+
+def retrieveSaveGrid(saveFilename, gridtime, retrieveHours, postalCode, lineupCode, device , country , debug ) :
+    if not os.path.exists(saveFilename):
+        try:
+            logging.info('Downloading guide data for: %s  %s (%s)', postalCode, datetime.datetime.fromtimestamp(gridtime).strftime('%Y-%m-%d %H:%M:%S'), str(gridtime))
+            url = 'http://tvlistings.zap2it.com/api/grid?lineupId=&timespan=' + str(retrieveHours) \
+                            + '&headendId=' + lineupCode \
+                            + '&country=' + country \
+                            + '&device=' + device \
+                            + '&postalCode=' + postalCode \
+                            + '&time=' + str(gridtime) \
+                            + '&pref=-&userId=-' \
+                            + '&languagecode=' + xConfig['language']
+            if debug : print ("URL will be ", url )
+            saveContent = urllib.request.urlopen(url).read()
+
+            try: 
+                if not os.path.exists(cacheDir):
+                    os.mkdir(cacheDir)
+                if debug : print ("trying to save file ", saveFilename)
+                with gzip.open(saveFilename,"wb+") as f:
+                    f.write(saveContent)
+                    f.close()
+            except: 
+                logging.warning('Could not save guide file for : %s', saveFilename)
+        except OSError as e:
+            logging.warning('Could not download guide data for: %s %s', str(gridtime), e.strerror)
+            logging.warning('URL: %s', url)
+
+def loadGrid( thisgridfile , debug ) : 
+
+    try:
+    ### Open each file with gzip since we saved it that way
+        with gzip.open(thisgridfile, 'rb') as f:
+            gridContent = f.read()
+            f.close()
+        logging.info('Parsing %s', thisgridfile)
+    except OSError as e :
+        logging.warning('Opening grid file : %s - %s', thisgridfile , e.strerror)
+        os.remove(gridFile)
+
+    try:     
+    ### parse the json 
+        jsonLoad = json.loads(gridContent)
+
+        if debug  : print (" file " , gridFile, ' has ' , len(jsonLoad['channels']) , ' channel records  ')
+
+    except OSError as e  : 
+        logging.warning ('Exception occurred parsing JSON data in grid - %s - %s' , thisgridfile , e.strerror)
+    ### and ignore this file
+        jsonLoad = ""
+    return jsonLoad 
+
+
+def build_station_data(stationDict , OTA=True) : 
+
+    return_dict = {}
+    return_dict['listing'] = {}
+    return_dict['info'] = {} 
+    channelNum = stationDict['channelNo']
+    callSign = stationDict['callSign']
+
+    if (OTA) : 
+        ### Sometimes the OTA channel num comes in with just the primary number and not the subchannel
+        ### If that's the case, see if the subchannel is embedded in the call sign and append
+        if '.' not in channelNum and callSign is not None:
+            chsub = re.search('(\d+)$', callSign)
+            if chsub is not None:
+                channelNum =  channelNum + '.' + chsub.group(0)
+            else:
+                channelNum =  channelNum + '.1'
+    station_key_part = str(channelNum.split('.')[0]).zfill(5)
+    if '.' in channelNum : 
+        station_key_part = station_key_part + \
+                str(int(channelNum.split('.')[1])*10).zfill(4) 
+    return_dict['info']['station_key'] = station_key_part +  "-" +  str(stationDict['channelId'])
+    return_dict['info']['stationID'] = stationDict['channelId'] + '.zap2epg'
+    return_dict['listing'] = []
+    return_dict['listing'].append( ['display-name',  str(channelNum) + ' ' + stationDict['callSign'] ] )
+    return_dict['listing'].append( ['display-name' , stationDict['callSign'] ] ) 
+    return_dict['listing'].append( ['display-name' , str(channelNum) ] )
+    return_dict['listing'].append( ['icon' ,  'src="http:' + stationDict['thumbnail'].split('?')[0] + '"'])          
+    return return_dict
+
+def parseEvents ( currentSchedule , newEvents, language ) :
+
+### This is where all the heavy lifting happens. 
+
+    adddedEvents = {}
+
+    for event in newEvents :
+    ####### get all the scheduled events for this channel
+    ####### convert start time to GMT and use that as a key... only 1 event at that time per channel
+        thisEvent = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
+#        print ("new event")
+ #       pprint(event)
+
+###        total_events+=1
+        if thisEvent not in currentSchedule and \
+           thisEvent not in adddedEvents :
+    ####### if the event doesn't exist in the schedule (It may be because we have a 2nd postal code with same station
+    ####### or more likely, it was in a previous parsed grid because it's a multi hour event that crosses grid boundaries)
+    #######   add the event to the schedule
+
+                eventProginfo = event['program'] #### get the embedded prog info
+                if xConfig['extended'] : 
+                    extended_details = getExtendedDetails(eventProginfo.get('seriesId') , eventProginfo.get('tmsId') )
+                adddedEvents[thisEvent] = {}
+                adddedEvents[thisEvent]['startTime'] = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
+                adddedEvents[thisEvent]['endTime'] = str(calendar.timegm(time.strptime(event.get('endTime'), '%Y-%m-%dT%H:%M:%SZ')))
+
+                adddedEvents[thisEvent]['4elements'] = []
+                adddedEvents[thisEvent]['4elements'].append( ["episode-num" , "system" , "dd_progid", \
+                                                str(eventProginfo.get('tmsId')[:-4] + "." + eventProginfo.get('tmsId')[-4:]) ] )
+                adddedEvents[thisEvent]['4elements'].append( ["title" , "lang" , language , eventProginfo.get('title') ] )
+                adddedEvents[thisEvent]['4elements'].append( ["sub-title", "lang" , language , eventProginfo.get('episodeTitle') ] )
+                if xConfig['extended'] == False : 
+                    adddedEvents[thisEvent]['4elements'].append ([ 'desc', "lang" , language , eventProginfo.get('shortDesc') ] )
+                adddedEvents[thisEvent]['4elements'].append( ["length", "units", "minutes", event.get('duration')])
+                if eventProginfo.get('season') is not None and eventProginfo.get('episode') is not None :
+
+                    adddedEvents[thisEvent]['4elements'].append( ["episode-num", "system", "onscreen" , \
+                                        str("S" + eventProginfo.get('season').zfill(2) + "E" + eventProginfo.get('episode').zfill(2) ) ] )
+                    adddedEvents[thisEvent]['4elements'].append( ["episode-num", "system", "xmltv_ns" , \
+                                        str(int(eventProginfo.get('season'))-1) + "." + str(int(eventProginfo.get('episode'))-1) + "."] )
+### Still need categories, description (with/without extended details) in this 4elements listing
+###                adddedEvents[thisEvent]['4elements'].append()
+ ########################                              
+                if xConfig['icon'] == 'episode' : 
+                    adddedEvents[thisEvent]['icon'] = "https://zap2it.tmsimg.com/assets/" + event.get('thumbnail') + ".jpg"
+                if xConfig['icon'] == 'series' :     
+                    ### Comes from the SERIES file 
+                    adddedEvents[thisEvent]['icon'] = "series icon here"
+
+    return adddedEvents
+
+def getExtendedDetails ( episodeId, showID) :
+    xDetails = {}
+### This is where we go and get Series/Movie info and pull some of that in , like episode icon, play with the categories, etc. 
+
+    print (" in extended defails for episode ", episodeId , " for the show ", showID)
+    return xDetails
+
 
 def massageGenres (EPfilter , EPgenre , EPlang, EPmatchLevel ) : 
 
@@ -287,115 +496,62 @@ def massageGenres (EPfilter , EPgenre , EPlang, EPmatchLevel ) :
         genreList.remove('Movie')
         genreList.insert(0, 'Movie')
     return genreList
-'''
 
-###  For finding Sports and determining Teams
-    xCompetitionSports=['Football' ,
-                        'Baseball'  ,
-                        'Hockey', 
-                        'Soccer' , 
-                        'Tennis' , 
-                        'Volleyball', 'Footvolley',
-                        'Boxing',
-                        'Auto racing', 
-                        'Mixed martial arts' ]
+def printXMLHeader ( ) : 
+    rootattr = { "source-info-url" :  "http://tvschedule.zap2it.com" , 
+                "source-info-name" : "zap2it.com" } 
 
-'''
+    root = ET.Element("tv" , rootattr)
+    
+    return root
 
-def retrieveallgrids ( retrieveDays , postalCodes , lineupCode, device , country , debug ) : 
-   ## start at the beginning of the current hour. 
-    gridHourInc = 4 
-    gridtimeStart = int(time.time()) - int(time.time())%3600 
+def printXMLStations (root, schedule) : 
 
-    ### Walk the current times, incrementing by "gridHourInc" number of hours, but do it so that we're 
-    ### always hitting the same hours every day. This way we're not shifting by an hour or so every time this executes.
-    ### That would create even more schedule files laying around in the tempdir...Presuming that this doesn't run at the same time daily.
-    thisGridTime = gridtimeStart
-    returnFilelist = []
+    for thischannel in schedule  : 
+    # Add sub element.
+        xchannelattr = { "id" : schedule[thischannel]['info']['stationID'] }
+        xchannel = ET.SubElement(root, "channel", xchannelattr)
+ #       listings = []
+        listings = schedule[thischannel]['station_listing']
+        for thislistline in listings :
+            channattr = ET.SubElement(xchannel , thislistline[0])
+            channattr.text =   thislistline[1]
 
-    if debug : retrieveDays = 0.124
-    if debug : gridHourInc = 1
+    return root
 
-    while thisGridTime <= gridtimeStart + (float(retrieveDays) * 24 * 3600) : 
-        nextStart = (thisGridTime + (gridHourInc * 3600)) - ((thisGridTime + (gridHourInc * 3600))%(gridHourInc*3600))
-        thisHours = int((nextStart - thisGridTime)/3600)
+def printXMLEvents(root , schedule ) : 
 
-        for thisPostalCode in postalCodes : 
-### And for each of the postal codes that were configured... Let's get a new grid file for this time slot.
-### Need to identify which ones are which or the file names will collide.
+    for thischannel in schedule  : 
+        theseEvents = schedule[thischannel]['events']
+        for thisEvent in theseEvents : 
+  # <programme start="20211108160000 -0600" stop="20211108163000 -0600" channel="20454.zap2epg">
+            eventattr = { "start" : theseEvents[thisEvent]['startTime'],
+                        "stop": theseEvents[thisEvent]['endTime'],
+                        "channel"  : schedule[thischannel]['info']['stationID'] }
+            xevent = ET.SubElement(root, "programme" , eventattr)
+            itemslist = theseEvents[thisEvent]['4elements']
+            for thisitem in itemslist :
+#                print ("next item to print") 
+#                pprint(thisitem)
+                itemattr = {}
+                itemattr[thisitem[1]] = thisitem[2]
+ #               print("Item attributes")
+  #              pprint (itemattr)
+   #             print (type(itemattr))
+                xitem = ET.SubElement(xevent , thisitem[0], itemattr)
+                xitem.text = thisitem[3]
 
-            filename = thisPostalCode.strip() + '-' + lineupCode.strip() + "-" + str(thisGridTime) + '.json.gz'
-            fileDir = os.path.join(cacheDir, filename)
-            if not os.path.exists(fileDir):
-                try:
-                   retrieveSaveGrid(fileDir, thisGridTime, thisHours , thisPostalCode.strip() , lineupCode, device , country , debug)
-                except OSError as e :
-                    logging.warning('unable to retrive the grid when trying... error %s', e.strerror )
-### Save the file name if it exists or if we just created it 
-            returnFilelist.append(fileDir)
-        thisGridTime = nextStart
-
-    return returnFilelist
-
-
-def retrieveSaveGrid(saveFilename, gridtime, retrieveHours, postalCode, lineupCode, device , country , debug ) :
-    if not os.path.exists(saveFilename):
-        try:
-            logging.info('Downloading guide data for: %s  %s (%s)', postalCode, datetime.datetime.fromtimestamp(gridtime).strftime('%Y-%m-%d %H:%M:%S'), str(gridtime))
-            url = 'http://tvlistings.zap2it.com/api/grid?lineupId=&timespan=' + str(retrieveHours) \
-                            + '&headendId=' + lineupCode \
-                            + '&country=' + country \
-                            + '&device=' + device \
-                            + '&postalCode=' + postalCode \
-                            + '&time=' + str(gridtime) \
-                            + '&pref=-&userId=-' \
-                            + '&languagecode=' + xConfig['language']
-            if debug : print ("URL will be ", url )
-            saveContent = urllib.request.urlopen(url).read()
-
-            try: 
-                if not os.path.exists(cacheDir):
-                    os.mkdir(cacheDir)
-                if debug : print ("trying to save file ", saveFilename)
-                with gzip.open(saveFilename,"wb+") as f:
-                    f.write(saveContent)
-                    f.close()
-            except: 
-                logging.warning('Could not save guide file for : %s', saveFilename)
-        except OSError as e:
-            logging.warning('Could not download guide data for: %s %s', str(gridtime), e.strerror)
-            logging.warning('URL: %s', url)
+            if "icon" in theseEvents[thisEvent] : 
+                itemattr = {"src" : theseEvents[thisEvent].get('icon')}
+                xitem = ET.SubElement(xevent , 'icon', itemattr)
+    return root 
 
 
-def build_station_data(stationDict , OTA=True) : 
-
-    return_dict = {}
-    return_dict['listing'] = {}
-    return_dict['info'] = {} 
-    channelNum = stationDict['channelNo']
-    callSign = stationDict['callSign']
-
-    if (OTA) : 
-        ### Sometimes the OTA channel num comes in with just the primary number and not the subchannel
-        ### If that's the case, see if the subchannel is embedded in the call sign and append
-        if '.' not in channelNum and callSign is not None:
-            chsub = re.search('(\d+)$', callSign)
-            if chsub is not None:
-                channelNum =  channelNum + '.' + chsub.group(0)
-            else:
-                channelNum =  channelNum + '.1'
-    station_key_part = str(channelNum.split('.')[0]).zfill(5)
-    if '.' in channelNum : 
-        station_key_part = station_key_part + \
-                str(int(channelNum.split('.')[1])*10).zfill(4) 
-    return_dict['info']['station_key'] = station_key_part +  "-" +  str(stationDict['channelId'])
-    return_dict['info']['stationID'] = '\t<channel id=\"' + stationDict['channelId'] + '.zap2epg\">'
-    return_dict['listing']['channelNumSign'] = '\t\t<display-name>' + channelNum + ' ' \
-                        + html.escape(stationDict['callSign'], quote=True) + '</display-name>'
-    return_dict['listing']['callSign']= '\t\t<display-name>' +  html.escape(stationDict['callSign'], quote=True)  + '</display-name>'
-    return_dict['listing']['channelNo'] = '\t\t<display-name>' + channelNum + '</display-name>'
-    return_dict['listing']['icon'] = '\t\t<icon src="http:' + stationDict['thumbnail'].split('?')[0] + '" />'         
-    return return_dict
+def printXMLFooter (root, xmloutfile , xmlencoding  ) : 
+    xmlstr = minidom.parseString(ET.tostring(root , encoding=xmlencoding, method='xml' )).\
+                        toprettyxml(indent = "\t", encoding=xmlencoding)
+    with open(xmloutfile, "wb") as f:
+       f.write(xmlstr)
 
 
 def somethingelse() : 
@@ -436,22 +592,8 @@ if __name__ == '__main__':
     xConfig = parseConfig ( arglineDict['configfile'] )
 
     logging.info ("Configuration loaded. ")
-    pprint (xConfig)
-    try:
-### command line parameter should overrid the config file
-        if 'outfile' not in arglineDict : 
-            xmlfile = os.path.join(userdata, xConfig['outfile'])
-        else :    
-            xmlfile = os.path.join(userdata, arglineDict['outfile'])
-
-        xmlencoding = 'utf-8'
-        xmlfh = codecs.open(xmlfile, 'w+b', encoding=xmlencoding)
+##    pprint (xConfig)
  
-    except OSError as e : 
-        logging.error("Unable to create output file %s - %s", xmlfile, e.strerror)
-        print ("Error creating output file " , xmlfile , e.strerror)
-        sys.exit(2)        
-
 
     ##### Validate that all of the required parameters have a value.. 
     ##### As of now, defaults exist for everything except the postal_code
@@ -459,6 +601,11 @@ if __name__ == '__main__':
         logging.error ("Postal Code is a REQUIRED parameter in the configuration")
         print ("Postal Code is a REQUIRED parameter in the configuration")
         sys.exit(2)
+
+    ### Purge out the old grid files from previous runs along with the next purge_days number of days 
+    ### this is to get the most recent version of the grid for the time slots required. They do change, sometimes daily
+
+    purgegrids (cacheDir,  xConfig['purge_days'], xConfig['debug-grid'])
 
 #    postalCodeList = xConfig['postal_code'].split( ",")
 
@@ -470,51 +617,26 @@ if __name__ == '__main__':
                                                 xConfig['country'], \
                                                 xConfig['debug-grid'])
 
-
-
-    overallDict ={} 
-    total_events = 0 
-    logged_events = 0
-
     if xConfig['lineupcode'] == 'lineupId' : 
         usingOTA = True 
     else :
         usingOTA = False
 
+    scheduleDict ={} 
+    total_events = 0 
+    logged_events = 0
     stationList = []
     try: 
         stationList = xConfig['station_list'].split(',')
     except BaseException as e: 
+        logging.warning("Error splitting the list of stations ... Setting to all channels - %s ", e.msg )
         print ("Error splitting up the list of stations - %s ", e.msg)
         stationList = [] ### Make a null list
 
-    pprint (stationList)
-    pprint (retrievedFilenamesList)
 
     for gridFile in retrievedFilenamesList : 
         if os.path.exists(gridFile):
-            try:
-        ### Open each file with gzip since we saved it that way
-                with gzip.open(gridFile, 'rb') as f:
-                    gridContent = f.read()
-                    f.close()
-                logging.info('Parsing %s', gridFile)
-            except OSError as e :
-                logging.warning('Opening grid file : %s - %s', gridFile , e.strerror)
-                os.remove(gridFile)
-
-            try:     
-    ### parse the json 
-                gridJSON = json.loads(gridContent)
-                pprint (xConfig['debug-grid'])
-
-                if xConfig['debug-grid'] : 
-                    print (" file " , gridFile, ' has ' , len(gridJSON['channels']) , ' channel records  ')
-
-            except OSError as e  : 
-                logging.warning ('Exception occurred parsing JSON data in grid - %s - %s' , gridFile , e.strerror)
-### and ignore this file
-                pass 
+            gridJSON = loadGrid(gridFile , xConfig['debug-grid'])
 
             for station in gridJSON['channels'] :
 #### if the channelID is in stationlist, or there is no station list (default is all stations represented by "" )
@@ -522,37 +644,40 @@ if __name__ == '__main__':
                     if xConfig['debug-grid'] : 
                         print ("next Station ID is " , station['channelId'] , " and call sign is ", station['callSign'] , " and channel num ", station['channelNo'])
                     station_data = build_station_data(station, usingOTA) 
+#                    print (station_data)
                     station_key=station_data['info']['station_key']
 ####### IF  channel doesn't exist in the current schedule
 #######      add the channel info
-                    if station_key not in overallDict:
-                        overallDict[station_key] = {}
-                        overallDict[station_key]['info']=station_data['info']
-                        overallDict[station_key]['station_listing'] = station_data['listing']
+                    if station_key not in scheduleDict:
+                        scheduleDict[station_key] = {}
+                        scheduleDict[station_key]['info']=station_data['info']
+                        scheduleDict[station_key]['station_listing'] = station_data['listing']
+                        scheduleDict[station_key]['events'] = {}
+###                    additionalEvents = {}
+                    additionalEvents = parseEvents( scheduleDict[station_key] , \
+                                                    station['events'],
+                                                    xConfig['language'])
+#                    print (" events that came back from parsing")
+#                    pprint (additionalEvents)
 
-                    for event in station['events']:
-####### get all the scheduled events for this channel
-####### convert start time to GMT and use that as a key... only 1 event at that time per channel
-                        thisEvent = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
-                        total_events+=1
-                        if thisEvent not in  overallDict[station_key] :
-####### if the event doesn't exist in the schedule (It may be because we have a 2nd postal code with same station)
-#######   add the event to the schedule
-                            overallDict[station_key][thisEvent] = {}
-                            logged_events+=1
-                        else : 
-                            logging.info('not logging event %s-%s with station key of %s', str(thisEvent),event['seriesId'], station_key)
+                    for newEvent in additionalEvents : 
+                        scheduleDict[station_key]['events'][newEvent] = additionalEvents[newEvent]
 
+    print ("There are a total of ", len(scheduleDict), " stations when all folded together")
+#    print ("There were ", total_events, " total events in the grids of which ", logged_events, " were logged")
 
-    print ("There are a total of ", len(overallDict), " stations when all folded together")
-    print ("There were ", total_events, " total events in the grids of which ", logged_events, " were logged")
+ #   pprint (scheduleDict)
 
-    for station in overallDict : 
+    xmlroot = printXMLHeader ( )  
+    xmlroot = printXMLStations ( xmlroot, scheduleDict)
+    xmlroot =  printXMLEvents(xmlroot , scheduleDict)
 
-        print (overallDict[station]['info']['stationID'])
-        for y in overallDict[station]['station_listing'] : 
-            print (overallDict[station]['station_listing'][y])
-        print ("\t</channel>")
+    if 'outfile' not in arglineDict : 
+        xmlfile = os.path.join(userdata, xConfig['outfile'])
+    else :    
+        xmlfile = os.path.join(userdata, arglineDict['outfile'])
+    xmlencoding = 'utf-8'
+    printXMLFooter(xmlroot,  xmlfile, xmlencoding)
 
     sys.exit(0)
 
@@ -560,7 +685,7 @@ if __name__ == '__main__':
 gridHourInc = 4  ## the number of hours to pull from Zap2it with each request. 
 
 
-#pprint (overallDict)
+#pprint (scheduleDict)
 
 '''
 '''
