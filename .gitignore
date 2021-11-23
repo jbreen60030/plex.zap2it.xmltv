@@ -2,3 +2,4 @@ xmltv*
 *.log
 cache*/
 .DS_Store
+*.xml
