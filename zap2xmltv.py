@@ -335,12 +335,15 @@ def build_station_data(stationDict , OTA=True) :
     return_dict['listing'].append( ['display-name',  str(channelNum) + ' ' + stationDict['callSign'] ] )
     return_dict['listing'].append( ['display-name' , stationDict['callSign'] ] ) 
     return_dict['listing'].append( ['display-name' , str(channelNum) ] )
+    return_dict['listing'].append( ['display-name' , str(stationDict['affiliateName'])])
     return_dict['listing'].append( ['icon' ,  'src="http:' + stationDict['thumbnail'].split('?')[0] + '"'])          
     return return_dict
 
 def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
 
 ### This is where all the heavy lifting happens. 
+#    print ("the current schedule as it's coming in")
+#    pprint (currentSchedule)
 
     adddedEvents = {}
 
@@ -360,6 +363,8 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
     #######   add the event to the schedule
 
             eventProginfo = event['program'] #### get the embedded prog info
+            extended_details = {}
+            extended_details['status'] = 'unknown'
             if xConfig['extended'] : 
                 extended_details = getExtendedDetails(eventProginfo.get('seriesId') , eventProginfo.get('tmsId'), cacheLocation )
                 if extended_details['status']=='Retry' : 
@@ -367,8 +372,18 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
                 if extended_details['status'] != "OK" : extended_details['status']='FAIL'
 
             adddedEvents[thisEvent] = {}
-            adddedEvents[thisEvent]['startTime'] = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
-            adddedEvents[thisEvent]['endTime'] = str(calendar.timegm(time.strptime(event.get('endTime'), '%Y-%m-%dT%H:%M:%SZ')))
+            ### Figure out the local time including DST for the time of the event. Some systems can't take Zulu time
+            ### And need to figure that out for both the start and end times... Wonder if there are any 1/2 hour events
+            ### that start right at Standard time (non-summer) change.
+            xStarttime = calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ'))
+            xis_dst = time.localtime(xStarttime).tm_isdst
+            xtzoffset = "%.2d%.2d" %(- (time.altzone if xis_dst else time.timezone)/3600, 0)
+            adddedEvents[thisEvent]['startTime'] = str( time.strftime("%Y%m%d%H%M%S", time.localtime(xStarttime))) + xtzoffset
+
+            xendtime = calendar.timegm(time.strptime(event.get('endTime'), '%Y-%m-%dT%H:%M:%SZ'))
+            xis_dst = time.localtime(xendtime).tm_isdst
+            xtzoffset = "%.2d%.2d" %(- (time.altzone if xis_dst else time.timezone)/3600, 0)
+            adddedEvents[thisEvent]['endTime'] = str( time.strftime("%Y%m%d%H%M%S", time.localtime(xendtime))) + xtzoffset
 
             adddedEvents[thisEvent]['4elements'] = []
             adddedEvents[thisEvent]['4elements'].append( ["episode-num" , "system" , "dd_progid", \
@@ -384,6 +399,15 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
                                     str("S" + eventProginfo.get('season').zfill(2) + "E" + eventProginfo.get('episode').zfill(2) ) ] )
                 adddedEvents[thisEvent]['4elements'].append( ["episode-num", "system", "xmltv_ns" , \
                                     str(int(eventProginfo.get('season'))-1) + "." + str(int(eventProginfo.get('episode'))-1) + "."] )
+
+            if extended_details['status'] == 'OK':
+#                print ("Adding the parsed extended details info")
+#                pprint(extended_details)
+                if "originalAirDate" in extended_details : 
+#                    print (" there is an original air date ")
+#                    print (extended_details['originalAirDate'])
+                    adddedEvents[thisEvent]['4elements'].append( ["previously-shown" , "start" , extended_details['originalAirDate'], " " ] )
+
     ### Still need categories, description (with/without extended details) in this 4elements listing
     ###                adddedEvents[thisEvent]['4elements'].append()
     ########################                              
@@ -392,7 +416,8 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
             if xConfig['icon'] == 'series' :     
                 ### Comes from the SERIES file 
                 adddedEvents[thisEvent]['icon'] = "series icon here"
-
+ #           print ("list of added events on the way back  ")
+ #           pprint (adddedEvents)
     return adddedEvents
 
 def getExtendedDetails ( showID, episodeId,  cacheLocation) :
@@ -455,12 +480,12 @@ def getExtendedDetails ( showID, episodeId,  cacheLocation) :
                             TBAcheck = '' ## initialize it
                             remove_file = False
                             logging.info("Walking the upcoming episode list for %s", episodeId)
-                            thisAiring=''
+                            thisAiring={}
                             for airing in episodelist:
                                 try: 
                                     logging.info("comparing %s to %s", episodeId, airing['tmsID'].lower())
                                     if episodeId == airing['tmsID'].lower():
-                                        thisAiring = episodeId
+                                        thisAiring = airing
                                         if not showID.startswith("MV"):
                                             try:
                                                 TBAcheck = airing.get('episodeTitle')
@@ -468,8 +493,8 @@ def getExtendedDetails ( showID, episodeId,  cacheLocation) :
                                                 TBAcheck = '' 
                                 except :
                                         logging.warning('Unable to compare episodeID with an airing')
-                            logging.info("end of list with episode = %s and found = %s", episodeId, thisAiring)
-                            if episodeId != thisAiring:  ## didn't find the episode in existing file
+                            logging.info("end of list with episode = %s and found = %s", episodeId, thisAiring['tmsID'])
+                            if episodeId != thisAiring['tmsID']:  ## didn't find the episode in existing file - been around a while
                                 del showCache[showID]
                                 xDetails['status']= 'Retry'
                                 remove_file = True
@@ -500,30 +525,22 @@ def getExtendedDetails ( showID, episodeId,  cacheLocation) :
                 xDetails['credits'] = showCache[showID]['credits'] 
                 xDetails['genre'] = showCache[showID]['genreDict']
 
-                print ("airing from before still good?") 
-
-#                EPlist = showCache[EPseries]['upcomingEpisodeTab']
-#                EPid = edict['epid']
-#
-#                for airing in EPlist:
-#                    try: 
-#                        if EPid.lower() == airing['tmsID'].lower():
-#                            if not episode.startswith("MV"):
-#                                try:
-#                                    origDate = airing.get('originalAirDate')
-#                                    if origDate != '':
-#                                        EPoad = re.sub('Z', ':00Z', airing.get('originalAirDate'))
-#                                        edict['epoad'] = str(calendar.timegm(time.strptime(EPoad, '%Y-%m-%dT%H:%M:%SZ')))
-#                                except Exception as e:
-#                                    logging.exception('Could not parse oad for: %s - %s', episode, e)
-#                    except Exception as e:
- #                           logging.exception(' Could not operate on OAD for %s ', EPseries )
+                if  not thisAiring['isNew'] and \
+                    not thisAiring['isLive'] and \
+                    not thisAiring['isPremier'] : 
+                ## and original air date , is another Zulu datetime value... get it and convert it. 
+                    xoriginalAir = calendar.timegm(time.strptime(thisAiring['originalAirDate'], '%Y-%m-%dT%H:%MZ'))
+                    xis_dst = time.localtime(xoriginalAir).tm_isdst
+                    xtzoffset = "%.2d%.2d" %(- (time.altzone if xis_dst else time.timezone)/3600, 0)
+                    xDetails['originalAirDate'] = str( time.strftime("%Y%m%d%H%M%S", time.localtime(xoriginalAir))) + xtzoffset
+#                print ("airing from before still good?") 
+#                print (showID, episodeId)
+#                pprint (thisAiring)
         except Exception as e:
             logging.exception('Exception: parseXdetails %s', e.strerror)
 
 ### This is where we go and get Series/Movie info and pull some of that in , like episode icon, play with the categories, etc. 
 
-    print (" in extended defails for episode ", episodeId , " for the show ", showID)
     return xDetails
 
 
@@ -630,6 +647,8 @@ def massageGenres (EPfilter , EPgenre , EPlang, EPmatchLevel ) :
 def printXMLHeader ( ) : 
     rootattr = { "source-info-url" :  "http://tvschedule.zap2it.com" , 
                 "source-info-name" : "zap2it.com" } 
+### Still need to figure out how to get a DOCTYPE element embedded
+### e.g. <!DOCTYPE tv SYSTEM "xmltv.dtd">
 
     root = ET.Element("tv" , rootattr)
     
@@ -641,11 +660,10 @@ def printXMLStations (root, schedule) :
     # Add sub element.
         xchannelattr = { "id" : schedule[thischannel]['info']['stationID'] }
         xchannel = ET.SubElement(root, "channel", xchannelattr)
- #       listings = []
         listings = schedule[thischannel]['station_listing']
         for thislistline in listings :
             channattr = ET.SubElement(xchannel , thislistline[0])
-            channattr.text =   thislistline[1]
+            channattr.text =  thislistline[1]
 
     return root
 
@@ -653,6 +671,7 @@ def printXMLEvents(root , schedule ) :
 
     for thischannel in schedule  : 
         theseEvents = schedule[thischannel]['events']
+#        print ("The number of events for channel ", thischannel, " is ", len(theseEvents))
         for thisEvent in theseEvents : 
   # <programme start="20211108160000 -0600" stop="20211108163000 -0600" channel="20454.zap2epg">
             eventattr = { "start" : theseEvents[thisEvent]['startTime'],
@@ -660,6 +679,9 @@ def printXMLEvents(root , schedule ) :
                         "channel"  : schedule[thischannel]['info']['stationID'] }
             xevent = ET.SubElement(root, "programme" , eventattr)
             itemslist = theseEvents[thisEvent]['4elements']
+#            print ("for event ", thisEvent," these are the items to print")
+#            pprint (itemslist)
+#            print (" and there are ", len(theseEvents[thisEvent]['4elements']), " in the item list.")
             for thisitem in itemslist :
 #                print ("next item to print") 
 #                pprint(thisitem)
@@ -678,18 +700,13 @@ def printXMLEvents(root , schedule ) :
 
 
 def printXMLFooter (root, xmloutfile , xmlencoding  ) : 
+### Still need to figure out how to get a DOCTYPE element embedded
+### e.g. <!DOCTYPE tv SYSTEM "xmltv.dtd">
     xmlstr = minidom.parseString(ET.tostring(root , encoding=xmlencoding, method='xml' )).\
                         toprettyxml(indent = "\t", encoding=xmlencoding)
     with open(xmloutfile, "wb") as f:
        f.write(xmlstr)
 
-
-def somethingelse() : 
-    mygenres = { "Talk", "Culture", "Movie"}
-
-    newgenres = massageGenres('', mygenres, xConfig['language'], xConfig['categories'])
-
-    pprint (newgenres)
 
 
   
@@ -737,8 +754,6 @@ if __name__ == '__main__':
 
     purgegrids (cacheDir,  xConfig['purge_days'], xConfig['debug-grid'])
 
-#    postalCodeList = xConfig['postal_code'].split( ",")
-
     retrievedFilenamesList = []
     retrievedFilenamesList = retrieveallgrids( xConfig['retrieve_days']  , \
                                                 xConfig['postal_code'] , \
@@ -746,13 +761,12 @@ if __name__ == '__main__':
                                                 xConfig['device'], \
                                                 xConfig['country'], \
                                                 xConfig['debug-grid'])
+### just some global dictionaries/caches.
 
     if xConfig['lineupcode'] == 'lineupId' : 
         usingOTA = True 
     else :
         usingOTA = False
-
-### just some global dictionaries/caches.
 
     scheduleDict ={} 
     detailCache = {}
@@ -782,7 +796,6 @@ if __name__ == '__main__':
                     if xConfig['debug-grid'] : 
                         print ("next Station ID is " , station['channelId'] , " and call sign is ", station['callSign'] , " and channel num ", station['channelNo'])
                     station_data = build_station_data(station, usingOTA) 
-#                    print (station_data)
                     station_key=station_data['info']['station_key']
 ####### IF  channel doesn't exist in the current schedule
 #######      add the channel info
@@ -791,24 +804,28 @@ if __name__ == '__main__':
                         scheduleDict[station_key]['info']=station_data['info']
                         scheduleDict[station_key]['station_listing'] = station_data['listing']
                         scheduleDict[station_key]['events'] = {}
-###                    additionalEvents = {}
-                    additionalEvents = parseEvents( scheduleDict[station_key] , \
+                    additionalEvents = parseEvents( scheduleDict[station_key]['events'] , \
                                                     station['events'],\
                                                     xConfig['language'], \
                                                     cacheDir)
-#                    print (" events that came back from parsing")
-#                    pprint (additionalEvents)
-
+#                    print (" size of events before adding the parsed events ", len(scheduleDict[station_key]['events']))
+#                    print ("Size of events returned ", len(additionalEvents))
                     for newEvent in additionalEvents : 
                         scheduleDict[station_key]['events'][newEvent] = additionalEvents[newEvent]
-
-    print ("There are a total of ", len(scheduleDict), " stations when all folded together")
-#    print ("There were ", total_events, " total events in the grids of which ", logged_events, " were logged")
-
- #   pprint (scheduleDict)
+#                        pprint( additionalEvents[newEvent])
+#                    print (" size of events AFTER adding the parsed events ", len(scheduleDict[station_key]['events']))
+#                    pprint(scheduleDict[station_key]['events'])
+### And now, let's build the XML info and write it all out. 
 
     xmlroot = printXMLHeader ( )  
+ #   print ("prior to printing the stations, the list looks like ")
+ #   pprint (scheduleDict)
+
     xmlroot = printXMLStations ( xmlroot, scheduleDict)
+
+ #   print ("prior to printing the events, the list looks like ")
+ #   pprint (scheduleDict)
+    
     xmlroot =  printXMLEvents(xmlroot , scheduleDict)
 
     if 'outfile' not in arglineDict : 
@@ -819,23 +836,3 @@ if __name__ == '__main__':
     printXMLFooter(xmlroot,  xmlfile, xmlencoding)
 
     sys.exit(0)
-
-    '''
-gridHourInc = 4  ## the number of hours to pull from Zap2it with each request. 
-
-
-#pprint (scheduleDict)
-
-'''
-'''
-
-
-progtime = "2021-10-31T23:00:00Z"
-
-that_start = str(calendar.timegm(time.strptime(progtime, '%Y-%m-%dT%H:%M:%SZ')))
-print ("progtime" , that_start)
-
-prog_dst = time.localtime(that_start).tm_isdst
-print ()
-
-'''
