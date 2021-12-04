@@ -1,5 +1,9 @@
 import sys , getopt
 
+from pathlib import Path
+from pathlib import PurePath
+
+
 import os
 import logging
 import codecs
@@ -8,6 +12,7 @@ import time
 import datetime
 import calendar
 import _strptime
+from distutils.util import strtobool
 
 import urllib.request, urllib.error, urllib.parse
 import gzip
@@ -16,6 +21,7 @@ import html
 from html import escape
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+
 
 from pprint import pprint
 from collections import OrderedDict
@@ -34,14 +40,14 @@ def parseArgv(argv) :
     argvDict['logfile']     =   'zap2xmltv.log'
     argvDict['outfile']     =   'xmltv.xml'
     try:
-        opts, args = getopt.getopt(argv,"hd:c:o:t:l:",["config=","outfile=","debug=","tempdir=","logfile="])
+        opts, args = getopt.getopt(argv,"hd:c:o:t:l:",["config=","outfile=","debug=","tempdir=","logfile=", "help"])
     except getopt.GetoptError as e:
-        print ('zap2xmltv.py -c <configfile> -o <outfile> -t <tempdir> -l <logfile>')
+        print ('zap2xmltv.py -c <configfile> -o <outfile> -t <tempdir> -l <logfile> ')
         print ('zap2xmltv.py --config=<configfile> --outfile=<outfile> --tempdir=<dir> --logfile=<logfile')
         sys.exit(2)
     for opt, arg in opts:
-        if opt == '-h':
-            print ('zap2xmltv.py -c <configfile> -o <outfile> -t <tempdir> -l <logfile>')
+        if opt in ( '-h', '--help'):
+            print ('zap2xmltv.py -c <configfile> -o <outfile> -t <tempdir> -l <logfile> ')
             print ('zap2xmltv.py --config=<configfile> --outfile=<outfile> --tempdir=<dir> --logfile=<logfile')
             sys.exit()
         elif opt in ("-c", "--config"):
@@ -66,29 +72,32 @@ def parseConfig ( xConfigFile ) :
                 "country" :     { "type" : "string" , "default" : "USA" , 
                                  "valid" : ["USA", "CAN"]} ,
                 "station_list" : { "type" : "string" , "default" : "None"} , 
-                "zapuser" : { "type" : "string" , "default" : "none"},
-                "zappwd" : { "type" : "string" , "default" : "none"},
                 "lineupcode" : { "type" : "string" , "default" : "lineupId"}, 
-                "device" : { "type" : "string" , "default" : "-"}
+                "device" : { "type" : "string" , "default" : "-"} , 
+                "zapuser" : { "type" : "string" , "default" : "none"},
+                "zappwd" : { "type" : "string" , "default" : "none"}
+
             },
         "retrieve" : 
             {   "retrieve_days" : { "type" : "int" , "default" : "14" , "range" : ["0","14"] } ,
-                "purge_days" : { "type" : "int" , "default" : "3", "range" : ["0", "14"] }
+                "purge_days" : { "type" : "int" , "default" : "2", "range" : ["0", "14"] }
             },
         "listing" : 
-            {   "language" : { "type": "string" , "default" : "en" ,
+            {   "outfile" : {"type" : "string" , "default" : "xmltv.xml"},
+                "language" : { "type": "string" , "default" : "en" ,
                                 "valid" : ["en", "fr"] } ,
-                "extended" : { "type" : "bool" , "default" : "True"},
                 "icon" :     { "type": "string" , "default": "episode" , 
                                "valid" : [ "none" , "series" , "episode" ]},
+                "xtra-details" : { "type" : "bool" , "default" : True},
                 "categories" : { "type" : "string" , "default" : "original" ,
                                  "valid" : [ "none" , "original", "kodi_all" , "kodi_primary"] } ,
-                "outfile" : {"type" : "string" , "default" : "xmltv.xml"}
+                "extended-desc" : { "type" : "bool" , "default": False}
+
             } ,
         "debug" : 
-             {   "debug-grid" : {"type": "bool" , "default": "False"} 
+             {   "debug-grid" : {"type": "bool" , "default": False} 
              },
-        "xdetails" : 
+        "xdescription" : 
             {   "detail-parts" : { "type" : "list", "default" : "",
                             "valid" : [ "ratings","date","myear","new","live",
                                         "hd","cc","cast","season", "epis","episqts","prog","plot","descsort",
@@ -113,7 +122,9 @@ def parseConfig ( xConfigFile ) :
             #pprint (xKeyList)
             if (xKeyList['type'] == 'bool') : 
                 try:
-                    xlocalConfig[xKey] = config.getboolean(xSection, xKey, fallback=xKeyList['default']) 
+                    xlocalConfig[xKey]  = config.getboolean(xSection, xKey, fallback=(xKeyList['default']))
+                    print (" key " , xKey , " = " , type(xlocalConfig[xKey]))
+                    pprint (xlocalConfig[xKey])
                 except:
                     print ("exception doing a get boolean for ", xSection, "-", xKey)
                     xlocalConfig[xKey] = bool(xKeyList['default'])
@@ -126,14 +137,14 @@ def parseConfig ( xConfigFile ) :
                         if int(xlocalConfig[xKey]) < int(xKeyList['range'][0]) or int(xlocalConfig[xKey]) > int(xKeyList['range'][1]) :
                             xlocalConfig[xKey] = xKeyList['default']  
                 except BaseException as err:
-                    print(f"Unexpected {err=}, {type(err)=} testing an INT for ", xSection, "-", xKey)
+                    print("Unexpected error testing an INT for ", xSection, "-", xKey)
                     xlocalConfig[xKey] = xKeyList['default']    
 
             if (xKeyList['type'] == 'string') : 
                 try:
                     xlocalConfig[xKey] = config.get(xSection, xKey, fallback=xKeyList['default'])
                     if 'valid' in xKeyList : 
-                        if xlocalConfig[xKey] not in xKeyList['valid'] : 
+                        if str(xlocalConfig[xKey]).lower() not in xKeyList['valid'] : 
                             xlocalConfig[xKey] = xKeyList['default']
                 except:
                     print ("exception doing a get string for ", xSection, "-", xKey)
@@ -176,50 +187,36 @@ def parseConfig ( xConfigFile ) :
                         if float(xlocalConfig[xKey]) < float(xKeyList['range'][0]) or float(xlocalConfig[xKey]) > float(xKeyList['range'][1]) :
                            xlocalConfig[xKey] = float(xKeyList['default'])  
                 except BaseException as err:
-                    print(f"Unexpected {err=}, {type(err)=} testing an FLOAT for ", xSection, "-", xKey)
+                    print("Unexpected error testing an FLOAT for ", xSection, "-", xKey)
                     xlocalConfig[xKey] = xKeyList['default']    
     return xlocalConfig
 
 
-'''
 
-###  For finding Sports and determining Teams
-    xCompetitionSports=['Football' ,
-                        'Baseball'  ,
-                        'Hockey', 
-                        'Soccer' , 
-                        'Tennis' , 
-                        'Volleyball', 'Footvolley',
-                        'Boxing',
-                        'Auto racing', 
-                        'Mixed martial arts' ]
-
-'''
 def purgegrids(  cacheDir, purge_days, debug ): 
 
     gridtimeStart = int(time.time()) - int(time.time())%3600 
     logging.info('Checking for old cache files...')
     try:
-        if os.path.exists(cacheDir):
-            entries = os.listdir(cacheDir)
-            for entry in entries:
-                oldfile = entry.split('.')[0]
-                if "-" in oldfile : 
-                    oldfile = oldfile.split('-')[2]
-                if oldfile.isdigit():
-                    fn = os.path.join(cacheDir, entry)
-                    if (int(oldfile)) < (gridtimeStart + (int(purge_days) * 86400)):
-                        try:
-                            os.remove(fn)
-                            logging.info('Deleting old cache: %s', entry)
-                        except OSError as e:
-                            logging.warning('Error Deleting: %s - %s.' % (e.filename, e.strerror))
+        gridDir = Path(cacheDir)
+        entries = gridDir.glob('*.json.gz')
+        for entry in entries:
+            oldfile = str(entry).split('.')[0]
+            if "-" in oldfile : 
+                oldfile = oldfile.split('-')[2]
+            if oldfile.isdigit():
+                if int(Path(entry).stat().st_mtime) < (gridtimeStart + (int(purge_days) * 86400)):
+                    try:
+                        Path(entry).unlink()
+                        logging.info('Deleting old cache: %s', entry)
+                    except OSError as e:
+                        logging.warning('Error Deleting: %s - %s.' % (e.filename, e.strerror))
     except Exception as e:
         logging.exception('Exception: deleteOldCache - %s', e.strerror)
 
 
 
-def retrieveallgrids ( retrieveDays , postalCodes , lineupCode, device , country , debug ) : 
+def retrieveallgrids ( cacheDir , retrieveDays , postalCodes , lineupCode, device , country , debug ) : 
    ## start at the beginning of the current hour. 
     gridHourInc = 4 
     gridtimeStart = int(time.time()) - int(time.time())%3600 
@@ -230,7 +227,7 @@ def retrieveallgrids ( retrieveDays , postalCodes , lineupCode, device , country
     thisGridTime = gridtimeStart
     returnFilelist = []
 
-    if debug : retrieveDays = 0.124
+    if debug : retrieveDays = 0.25
     if debug : gridHourInc = 1
 
     while thisGridTime <= gridtimeStart + (float(retrieveDays) * 24 * 3600) : 
@@ -242,20 +239,20 @@ def retrieveallgrids ( retrieveDays , postalCodes , lineupCode, device , country
 ### Need to identify which ones are which or the file names will collide.
 
             filename = thisPostalCode.strip() + '-' + lineupCode.strip() + "-" + str(thisGridTime) + '.json.gz'
-            fileDir = os.path.join(cacheDir, filename)
-            if not os.path.exists(fileDir):
+            fullfileDir = os.path.join(cacheDir, filename)
+            if not os.path.exists(fullfileDir):
                 try:
-                   retrieveSaveGrid(fileDir, thisGridTime, thisHours , thisPostalCode.strip() , lineupCode, device , country , debug)
+                   retrieveSaveGrid(cacheDir , fullfileDir, thisGridTime, thisHours , thisPostalCode.strip() , lineupCode, device , country , debug)
                 except OSError as e :
                     logging.warning('unable to retrive the grid when trying... error %s', e.strerror )
 ### Save the file name if it exists or if we just created it 
-            returnFilelist.append(fileDir)
+            returnFilelist.append(fullfileDir)
         thisGridTime = nextStart
 
     return returnFilelist
 
 
-def retrieveSaveGrid(saveFilename, gridtime, retrieveHours, postalCode, lineupCode, device , country , debug ) :
+def retrieveSaveGrid(cacheDir , saveFilename, gridtime, retrieveHours, postalCode, lineupCode, device , country , debug ) :
     if not os.path.exists(saveFilename):
         try:
             logging.info('Downloading guide data for: %s  %s (%s)', postalCode, datetime.datetime.fromtimestamp(gridtime).strftime('%Y-%m-%d %H:%M:%S'), str(gridtime))
@@ -341,7 +338,7 @@ def build_station_data(stationDict , OTA=True) :
     return_dict['listing'].append( ['icon' ,  'src="http:' + stationDict['thumbnail'].split('?')[0] + '"'])          
     return return_dict
 
-def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
+def parseEvents ( cacheLocation, currentSchedule , newEvents, language ) :
 
 ### This is where all the heavy lifting happens. 
 #    print ("the current schedule as it's coming in")
@@ -353,10 +350,6 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
     ####### get all the scheduled events for this channel
     ####### convert start time to GMT and use that as a key... only 1 event at that time per channel
         thisEvent = str(calendar.timegm(time.strptime(event.get('startTime'), '%Y-%m-%dT%H:%M:%SZ')))
-#        print ("new event")
- #       pprint(event)
-
-
 ###        total_events+=1
         if thisEvent not in currentSchedule and \
            thisEvent not in adddedEvents :
@@ -367,7 +360,7 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
             eventProginfo = event['program'] #### get the embedded prog info
             extended_details = {}
             extended_details['status'] = 'unknown'
-            if xConfig['extended'] : 
+            if xConfig['xtra-details'] : 
                 extended_details = getExtendedDetails(eventProginfo.get('seriesId') , eventProginfo.get('tmsId'), cacheLocation )
                 if extended_details['status']=='Retry' : 
                     extended_details = getExtendedDetails(eventProginfo.get('seriesId') , eventProginfo.get('tmsId'), cacheLocation )
@@ -386,14 +379,12 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
             xis_dst = time.localtime(xendtime).tm_isdst
             xtzoffset = " %.2d%.2d" %(- (time.altzone if xis_dst else time.timezone)/3600, 0)
             adddedEvents[thisEvent]['endTime'] = str( time.strftime("%Y%m%d%H%M%S", time.localtime(xendtime))) + xtzoffset
-
+            adddedEvents[thisEvent]['1element'] = []
             adddedEvents[thisEvent]['4elements'] = []
             adddedEvents[thisEvent]['4elements'].append( ["episode-num" , "system" , "dd_progid", \
                                             str(eventProginfo.get('tmsId')[:-4] + "." + eventProginfo.get('tmsId')[-4:]) ] )
             adddedEvents[thisEvent]['4elements'].append( ["title" , "lang" , language , eventProginfo.get('title') ] )
             adddedEvents[thisEvent]['4elements'].append( ["sub-title", "lang" , language , eventProginfo.get('episodeTitle') ] )
-            if xConfig['extended'] == False : 
-                adddedEvents[thisEvent]['4elements'].append ([ 'desc', "lang" , language , eventProginfo.get('shortDesc') ] )
             adddedEvents[thisEvent]['4elements'].append( ["length", "units", "minutes", event.get('duration')])
             if eventProginfo.get('season') is not None and eventProginfo.get('episode') is not None :
 
@@ -402,15 +393,79 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
                 adddedEvents[thisEvent]['4elements'].append( ["episode-num", "system", "xmltv_ns" , \
                                     str(int(eventProginfo.get('season'))-1) + "." + str(int(eventProginfo.get('episode'))-1) + "."] )
 
-            if extended_details['status'] == 'OK':
-#                print ("Adding the parsed extended details info")
-#                pprint(extended_details)
-                if "originalAirDate" in extended_details : 
-#                    print (" there is an original air date ")
-#                    print (extended_details['originalAirDate'])
-                    adddedEvents[thisEvent]['4elements'].append( ["previously-shown" , "start" , extended_details['originalAirDate'], " " ] )
+            if xConfig['extended-desc'] == False : 
+                adddedEvents[thisEvent]['4elements'].append ([ 'desc', "lang" , language , eventProginfo.get('shortDesc') ] )
 
-    ### Still need categories, description (with/without extended details) in this 4elements listing
+            xCategoriesTemp = []  # we will add in the extended info categories as available
+            for xfilter in event['filter']:
+                xCategoriesTemp.append(xfilter.split('-')[1].title())
+
+            adddedEvents[thisEvent]['flags'] = {}  
+            print ("flags in event ", thisEvent)
+            pprint(event['flag'])  
+            for thisflag in {'New','Live','Premier','Last-chance'} : 
+                if thisflag in event['flag'] : 
+                    adddedEvents[thisEvent]['flags'][thisflag.lower()] = True
+
+            print ("after taking the event flags")
+            pprint (adddedEvents[thisEvent]['flags'])
+
+
+            if extended_details['status'] == 'OK':
+                print ("adding in extended detail flags")
+                if "flags" in extended_details : 
+                    for thisflag in extended_details['flags']:
+                        if thisflag in adddedEvents[thisEvent]['flags'] : 
+                            adddedEvents[thisEvent]['flags'][thisflag] = extended_details['flags'][thisflag]
+                        else:
+                            adddedEvents[thisEvent]['flags'][thisflag] =  extended_details['flags'][thisflag]
+            print ("After adding in the extended details flags")
+            pprint (adddedEvents[thisEvent]['flags'])
+            if not any(i in ['new', 'live', 'premier'] for i in adddedEvents[thisEvent]['flags']) : 
+                print ("we are allegedly not live or new")
+                if "originalAirDate" in extended_details :
+                    print ("Adding the extended details OAD") 
+                    adddedEvents[thisEvent]['4elements'].append( ["previously-shown" , "start" , extended_details['originalAirDate'], " " ] )
+                else: 
+                    print ("not extended details OAD")
+                    adddedEvents[thisEvent]['flags']["previously-shown"] = True
+
+
+            if extended_details['status'] == 'OK':
+                if "credits" in extended_details: 
+                    adddedEvents[thisEvent]['credits'] = []
+                    theseCredits = extended_details['credits']
+                    for thisRole in theseCredits : 
+                        for thisPerson in theseCredits[thisRole]: 
+                            adddedEvents[thisEvent]['credits'].append([ thisPerson['role'].replace(' ','-'),\
+                                                                        thisPerson['name']])
+  
+
+                if 'categories' in extended_details :
+                    for thisCategory in extended_details['categories']:
+                        if thisCategory != "" : xCategoriesTemp.append(thisCategory)
+#            print (" checking for categories with parms ", xConfig['categories'])
+            if str(xConfig['categories']).lower() != 'none' :
+                if str(xConfig['categories']).lower() != 'original':
+                    xCategoriesTemp = massageGenres(xCategoriesTemp,xConfig['language'],xConfig['categories'])
+
+                sportsCheck = isThereASport(xCategoriesTemp, eventProginfo.get('episodeTitle') )
+                if 'sport' in sportsCheck : 
+### There should be a sport  and potentially teams
+                    xCategoriesTemp.append('Sports')
+                    if str(sportsCheck['sport']).lower() != 'sports' : 
+                        adddedEvents[thisEvent]['4elements'].append( ["sport", "lang" , language , sportsCheck['sport'] ] )
+
+                xCategories = []
+                ### Strip dupes
+                [xCategories.append(x) for x in xCategoriesTemp if x not in xCategories]
+                [adddedEvents[thisEvent]['4elements'].append( ["category", "lang" , language , x ] ) for x in xCategories ]
+ 
+
+                if 'teams' in sportsCheck: 
+                   [adddedEvents[thisEvent]['4elements'].append( ["team", "lang" , language , x ] ) for x in sportsCheck['teams'] ]
+
+    ### Still need  expanded description (with/without extended details) in this 4elements listing 
     ###                adddedEvents[thisEvent]['4elements'].append()
     ########################                              
             if xConfig['icon'] == 'episode' : 
@@ -418,6 +473,15 @@ def parseEvents ( currentSchedule , newEvents, language , cacheLocation) :
             if xConfig['icon'] == 'series' :     
                 ### Comes from the SERIES file 
                 adddedEvents[thisEvent]['icon'] = "series icon here"
+ ### Still need
+ ### Stars
+ ### Tags (prob just in extended descr?)
+ ### rating
+ ### confirm the image/thumbnail.
+ ### release year for Movies
+
+### need the list of series file names so that they don't get trashed... 
+
  #           print ("list of added events on the way back  ")
  #           pprint (adddedEvents)
     return adddedEvents
@@ -426,15 +490,16 @@ def getExtendedDetails ( showID, episodeId,  cacheLocation) :
     episodeId = episodeId.lower()
 
     xDetails = {}
-    xDetails['status']='OK'
+    xDetails['status']='CACHED'
+    thisAiring={}
+    filename = showID + '.json'
+    fileDir = os.path.join(cacheDir, filename)
 
     if showID not in showCache: 
+        xDetails['status']='FAIL'  #so we don't have to update it in every exception 
         logging.info('Adding series %s to showCache', showID)
-        filename = showID + '.json'
-        fileDir = os.path.join(cacheDir, filename)
         showCache[showID] = {}
         showCache[showID]['filename']= filename 
-        showCache[showID]['epcredits']= None
         try:
             if not os.path.exists(fileDir) and showID not in failList:
                 retry = 3
@@ -468,90 +533,102 @@ def getExtendedDetails ( showID, episodeId,  cacheLocation) :
                             with open(fileDir, 'rb') as f:
                                 showDetails = json.loads(f.read())
                                 f.close()
-                            logging.info('Parsing %s', filename)
+#                            logging.info('Parsing %s', filename)
                             showCache[showID]['seriesImage'] = showDetails.get('seriesImage')
                             showCache[showID]['backgroundImage'] = showDetails.get('backgroundImage')
-                            showCache[showID]['credits'] = showDetails['overviewTab']
-                            genreString = showDetails.get('seriesGenres')
-                            if filename.startswith("MV"):
-                                genreString = 'Movie|' + genreString
-
-                            showCache[showID]['genreDict'] = genreString.split('|')
+                            if 'cast' in showDetails['overviewTab'] and len(showDetails['overviewTab']['cast']) > 0 :
+                                showCache[showID]['credits']={}
+                                showCache[showID]['credits']['cast'] = showDetails['overviewTab']['cast']
+                            if 'crew' in showDetails['overviewTab']  and len(showDetails['overviewTab']['crew']) > 0:
+                                if 'credits' not in showCache[showID] : 
+                                    showCache[showID]['credits']={}
+                                showCache[showID]['credits']['crew'] = showDetails['overviewTab']['crew']
                             showCache[showID]['stars'] = showDetails.get('starRating')
-                            episodelist = showDetails['upcomingEpisodeTab']
-                            TBAcheck = '' ## initialize it
-                            remove_file = False
-  #                          logging.info("Walking the upcoming episode list for %s", episodeId)
-                            thisAiring={}
-                            for airing in episodelist:
-                                try: 
- #                                   logging.info("comparing %s to %s", episodeId, airing['tmsID'].lower())
-                                    if episodeId == airing['tmsID'].lower():
-                                        thisAiring = airing
-                                        if not showID.startswith("MV"):
-                                            try:
-                                                TBAcheck = airing.get('episodeTitle')
-                                            except : 
-                                                TBAcheck = '' 
-                                except :
-                                        logging.warning('Unable to compare episodeID with an airing')
-#                            logging.info("end of list with episode = %s and found = %s", episodeId, thisAiring['tmsID'])
-                            if episodeId != thisAiring['tmsID']:  ## didn't find the episode in existing file - been around a while
-                                del showCache[showID]
-                                xDetails['status']= 'Retry'
-                                remove_file = True
-                            else : 
-                                if "TBA" in TBAcheck:
-                                    logging.info('Deleting %s due to TBA listings', filename)
-                                    remove_file = True
-
-                            if remove_file : 
-                                try : 
-                                    os.remove(fileDir)
-                                except OSError as e:
-                                    logging.warning('Error Deleting: %s - %s.' % (e.filename, e.strerror))
+                            showCache[showID]['upcomingEpisodeTab'] = showDetails['upcomingEpisodeTab']
+                            xDetails['status']='CACHED'
                         except OSError as e:
                             logging.warning('Error opening Series File : %s - %s.' % (e.filename, e.strerror))
+                            failList.append(showID)
+                            del showCache[showID]   # Delete from cache to indicate we failed.
                 except OSError as e : 
                     logging.warning ("Unable to get size of the downloaded file %s - %s", e.filename, e.strerror)
+                    failList.append(showID)
+                    del showCache[showID]   # Delete from cache to indicate we failed.
             else:
                 logging.warning('Could not download details data for: %s - skipping episode', EPseries)
                 failList.append(showID)
                 del showCache[showID]   # Delete from cache to indicate we failed.
-                xDetails['status']='FAIL'
+        except Exception as e:
+            logging.exception('Exception: parseXdetails retrieving show details %s', e.strerror)
 
-            if showID in showCache:  # it won't if the download failed.   
-                xDetails['seriesImage'] = showCache[showID]['seriesImage']
-                xDetails['backgroundImage'] = showCache[showID]['backgroundImage']
+    if showID in showCache and xDetails['status'] == 'CACHED' :  # it won't if the download failed this time or previously   
+## See if we can find the airing of this episode 
+        episodelist = showCache[showID]['upcomingEpisodeTab']
+        TBAcheck = '' ## initialize it
+        remove_file = False
+#        logging.info("Walking the upcoming episode list for %s", episodeId)
+        thisAiring={}
+        for airing in episodelist:
+            try: 
+#                logging.info("comparing %s to %s", episodeId, airing['tmsID'].lower())
+                if episodeId == airing['tmsID'].lower():
+                    thisAiring = airing
+                    if not showID.startswith("MV"):
+                        try:
+                            TBAcheck = airing.get('episodeTitle')
+                        except : 
+                            TBAcheck = '' 
+            except :
+                logging.warning('Unable to compare episodeID with an airing')
+#        logging.info("end of list with episode = %s and found = %s", episodeId, thisAiring['tmsID'])
+        if 'tmsID' not in thisAiring or episodeId != thisAiring['tmsID'].lower():  ## didn't find the episode in existing file - been around a while
+            logging.info(" can't find the airing for %s . Deleting file", episodeId)
+            print ("ok, claim we can't find the airing.. which might be a .lower() issue")
+            pprint(thisAiring)
+            del showCache[showID]
+            xDetails['status']= 'Retry'
+            remove_file = True
+        else : 
+            if "TBA" in TBAcheck:
+                logging.info('Deleting %s due to TBA listings', filename)
+                remove_file = True
+        if remove_file : 
+            try : 
+                os.remove(fileDir)
+            except OSError as e:
+                logging.warning('Error Deleting: %s - %s.' % (e.filename, e.strerror))
+
+        if xDetails['status'] == 'CACHED' :
+             
+            xDetails['seriesImage'] = showCache[showID]['seriesImage']
+            xDetails['backgroundImage'] = showCache[showID]['backgroundImage']
+            if 'credits' in showCache[showID] : 
                 xDetails['credits'] = showCache[showID]['credits'] 
-                xDetails['genre'] = showCache[showID]['genreDict']
 
-            ### And details about this episode from the series file.
-            xDetails['genre'] = thisAiring['isNew'] 
-            xDetails['genre'] = thisAiring['isLive']
-            xDetails['genre'] = thisAiring['isPremier'] 
-            xDetails['genre'] = thisAiring['isFinale']
+        ### And details about this episode from the series file.
+            xDetails['flags'] = {}
+            if thisAiring['isNew'] : xDetails['flags']['new'] = True  
+            if thisAiring['isLive'] : xDetails['flags']['live'] = True
+            if thisAiring['isPremier']  : xDetails['flags']['premier'] = True
+            if thisAiring['isFinale'] : xDetails['flags']['last-chance'] = True
 
-            if  not thisAiring['isNew'] and \
-                not thisAiring['isLive'] and \
-                not thisAiring['isPremier'] : 
+            if thisAiring['originalAirDate'] != "" : 
             ## and original air date , is another Zulu datetime value... get it and convert it. 
                 xoriginalAir = calendar.timegm(time.strptime(thisAiring['originalAirDate'], '%Y-%m-%dT%H:%MZ'))
                 xis_dst = time.localtime(xoriginalAir).tm_isdst
-                xtzoffset = "%.2d%.2d" %(- (time.altzone if xis_dst else time.timezone)/3600, 0)
+                xtzoffset = " %.2d%.2d" %(- (time.altzone if xis_dst else time.timezone)/3600, 0)
                 xDetails['originalAirDate'] = str( time.strftime("%Y%m%d%H%M%S", time.localtime(xoriginalAir))) + xtzoffset
-#                print ("airing from before still good?") 
-#                print (showID, episodeId)
-#                pprint (thisAiring)
-        except Exception as e:
-            logging.exception('Exception: parseXdetails %s', e.strerror)
+            genreString = thisAiring['programGenres']
+            if showCache[showID]['filename'].startswith("MV"):
+                genreString = 'Movie|' + genreString
 
-### This is where we go and get Series/Movie info and pull some of that in , like episode icon, play with the categories, etc. 
+            xDetails['categories'] = genreString.split('|')
+            xDetails['status']='OK'
 
     return xDetails
 
 
-def massageGenres (EPfilter , EPgenre , EPlang, EPmatchLevel ) : 
+def massageGenres ( EPgenre , EPlang, EPmatchLevel ) : 
 
     xLangGenres = { 
         "Lang_en" :  
@@ -561,7 +638,7 @@ def massageGenres (EPfilter , EPgenre , EPlang, EPmatchLevel ) :
                         "Movie" : "Movie / Drama",
                         'News' : "News / Current affairs" ,
                         'Game show' : "Game show / Quiz / Contest",
-                        'Law' : "Show / Game show",
+                        'Law' : "Law",
                         'Culture' : "Arts / Culture (without music)",
                         'Art' :  "Arts / Culture (without music)",
                         'Entertainment' : "Popular culture / Traditional Arts",
@@ -628,28 +705,66 @@ def massageGenres (EPfilter , EPgenre , EPlang, EPmatchLevel ) :
         if (g == 'Comedy') and (EPmatchLevel == 'kodi_all'):
                 pass
         else :
-            genreList.append(g)
+            genreList.append(str(g).title())
     myLang = 'Lang_' + EPlang
     myLevel = "Level_" + str(EPmatchLevel)
     myGenDict = xLangGenres[myLang][myLevel]
     for g in myGenDict:
-        if g in genreList :
+        if g.title() in genreList :
             if EPmatchLevel == 'kodi_primary' : 
                 genreList.clear()
-                genreList.append (myGenDict[g])
+                genreList.append (myGenDict[g].title())
                 xEpgenre1_found = 1 
             elif EPmatchLevel == 'kodi_all' : 
-                genreList.insert(0,myGenDict[g])
+                genreList.insert(0,myGenDict[g].title())
             else:
                 pass
 ### And if it isn't one of the Level1 categories, then make it a default.
     if EPmatchLevel== 'kodi_primary' and xEpgenre1_found == 0 : 
-        genreList = ["Variety show"]
+        genreList = ["Variety Show"]
 
     if 'Movie' in genreList:
         genreList.remove('Movie')
         genreList.insert(0, 'Movie')
     return genreList
+
+def isThereASport(CategoryList, EventTitle ) :
+#    print ("checking if there is a sport in ", EventTitle)
+#    pprint (CategoryList)
+
+###  For finding Sports and determining Teams
+    xCompetitionSports=['football' ,
+                        'baseball'  ,
+                        'basketball',
+                        'hockey', 
+                        'soccer' , 
+                        'tennis' , 
+                        'volleyball', 'footvolley',
+                        'boxing',
+                        'auto racing', 
+                        'mixed martial arts',
+                        'sports' ]
+    xSportsTeamSeparators=[' at ', ' vs. ']
+    return_dict = {}
+    for this_category in CategoryList:
+        if this_category.lower() in xCompetitionSports:
+            if 'sport' not in return_dict : return_dict['sport'] = this_category
+            if return_dict['sport'].lower() == 'sports':  return_dict['sport'] = this_category
+
+            if EventTitle is not None and EventTitle != "":
+                for this_separator in xSportsTeamSeparators:
+                    xMyTeams = EventTitle.split(this_separator)
+                    if len(xMyTeams) > 1:
+                        return_dict['teams'] = []
+                        return_dict['teams'].append(xMyTeams[0])
+                        return_dict['teams'].append(xMyTeams[1])
+    return return_dict
+
+###############################
+###############################
+###  Generate XML from the station and events info
+###############################
+###############################
 
 def printXMLHeader ( ) : 
     rootattr = { "source-info-url" :  "http://tvschedule.zap2it.com" , 
@@ -663,6 +778,7 @@ def printXMLHeader ( ) :
 
 def printXMLStations (root, schedule) : 
     logging.info("Adding Stations to XML info")
+    station_count = 0
     sortedDict = OrderedDict(sorted(schedule.items(),key=lambda x:x[0]))
     for thischannel in sortedDict  : 
 
@@ -678,12 +794,13 @@ def printXMLStations (root, schedule) :
         for thislistline in listings :
             channattr = ET.SubElement(xchannel , thislistline[0])
             channattr.text =  thislistline[1]
-
+        station_count +=1 
+    logging.info("Added %s stations to the XML", int(station_count))
     return root
 
 def printXMLEvents(root , schedule ) : 
     logging.info("Adding Events to the XML info")
-
+    event_count = 0
     sortedDict = OrderedDict(sorted(schedule.items(),key=lambda x:x[0]))
     for thischannel in sortedDict  : 
         theseEvents = schedule[thischannel]['events']
@@ -703,15 +820,28 @@ def printXMLEvents(root , schedule ) :
 #                pprint(thisitem)
                 itemattr = {}
                 itemattr[thisitem[1]] = thisitem[2]
- #               print("Item attributes")
-  #              pprint (itemattr)
-   #             print (type(itemattr))
+#                print("Item attributes")
+#                pprint (itemattr)
+#                print (type(itemattr))
                 xitem = ET.SubElement(xevent , thisitem[0], itemattr)
                 xitem.text = thisitem[3]
 
             if "icon" in theseEvents[thisEvent] : 
                 itemattr = {"src" : theseEvents[thisEvent].get('icon')}
                 xitem = ET.SubElement(xevent , 'icon', itemattr)
+
+            if "credits" in theseEvents[thisEvent]: 
+                xcredits = ET.SubElement(xevent, 'credits')
+                for thisCredit in theseEvents[thisEvent]['credits']: 
+                    xitem = ET.SubElement(xcredits , thisCredit[0])
+                    xitem.text = thisCredit[1]
+            if "flags" in theseEvents[thisEvent]:
+                theseflags =  theseEvents[thisEvent]['flags']
+                for thisflag in theseflags:
+                    if theseflags[thisflag] : 
+                        xflag = ET.SubElement(xevent, thisflag)               
+            event_count += 1 
+    logging.info("Added %s events to the XML file", int(event_count))
     return root 
 
 
@@ -719,12 +849,30 @@ def printXMLFooter (root, xmloutfile , xmlencoding  ) :
 ### Still need to figure out how to get a DOCTYPE element embedded
 ### e.g. <!DOCTYPE tv SYSTEM "xmltv.dtd">
     logging.info("Writing XML file %s ", xmloutfile)
+#    pprint(ET.tostring(root , encoding=xmlencoding, method='xml' ))
     xmlstr = minidom.parseString(ET.tostring(root , encoding=xmlencoding, method='xml' )).\
                         toprettyxml(indent = "\t", encoding=xmlencoding)
     with open(xmloutfile, "wb") as f:
        f.write(xmlstr)
 
 
+def purgeoldshowfiles ( cacheLocation, retrieveDays ) :
+    logging.info('Deleting show files older than : %s days', retrieveDays)
+
+    purgetime = int(time.time()) - (3600 * 24 * retrieveDays) 
+    logging.info('Purging old show files...')
+    try:
+        purgeDir = Path(cacheDir)
+        entries = purgeDir.glob('*.json')
+        for entry in entries:
+            if int(Path(entry).stat().st_mtime) < purgetime :
+                try:
+                    Path(entry).unlink()
+                    logging.info('Deleting old show file : %s', entry)
+                except OSError as e:
+                    logging.warning('Error Deleting: %s - %s.' % (e.filename, e.strerror))
+    except Exception as e:
+        logging.exception('Exception: purgeoldshowfiles - %s', e.strerror)
 
   
 #########################
@@ -733,9 +881,9 @@ def printXMLFooter (root, xmloutfile , xmlencoding  ) :
 if __name__ == '__main__':
 
     arglineDict = parseArgv(sys.argv[1:])
-    userdata = os.getcwd()
+    userdata = Path.cwd()
     try:
-        log = os.path.join(userdata, arglineDict['logfile'])
+        log = PurePath(userdata).joinpath(arglineDict['logfile'])
         logging.basicConfig(filename=log, filemode='w', format='%(asctime)s %(message)s', datefmt='%Y/%m/%d %H:%M:%S', level=logging.DEBUG)
 
         logging.info ('Starting zap2xmltv ')
@@ -744,9 +892,9 @@ if __name__ == '__main__':
         sys.exit(2)        
 
     try:
-        cacheDir = os.path.join(userdata, arglineDict['tempdir'])
-        if not os.path.exists(cacheDir):
-            os.mkdir(cacheDir)
+        cacheDir = PurePath(userdata).joinpath(arglineDict['tempdir'])
+        if not Path(cacheDir).exists():
+            Path.mkdir(cacheDir)
     except OSError as e : 
         logging.exception("Unable to create tempdir directory %s - %s", cacheDir, e.strerror)
         print ("Error creating cache directory - %s" , e.strerror)
@@ -756,8 +904,8 @@ if __name__ == '__main__':
     xConfig = parseConfig ( arglineDict['configfile'] )
 
     logging.info ("Configuration loaded. ")
-##    pprint (xConfig)
  
+    pprint (xConfig)
 
     ##### Validate that all of the required parameters have a value.. 
     ##### As of now, defaults exist for everything except the postal_code
@@ -772,7 +920,8 @@ if __name__ == '__main__':
     purgegrids (cacheDir,  xConfig['purge_days'], xConfig['debug-grid'])
 
     retrievedFilenamesList = []
-    retrievedFilenamesList = retrieveallgrids( xConfig['retrieve_days']  , \
+    retrievedFilenamesList = retrieveallgrids( cacheDir, \
+                                                xConfig['retrieve_days']  , \
                                                 xConfig['postal_code'] , \
                                                 xConfig['lineupcode'], \
                                                 xConfig['device'], \
@@ -803,8 +952,7 @@ if __name__ == '__main__':
         stationList = [] ### Make a null list
 
     if stationList[0] == 'None' : stationList = []
-    pprint(stationList)
-
+ 
     for gridFile in retrievedFilenamesList : 
         if os.path.exists(gridFile):
             gridJSON = loadGrid(gridFile , xConfig['debug-grid'])
@@ -827,10 +975,10 @@ if __name__ == '__main__':
                         scheduleDict[station_key]['events'] = {}
                     if thisPostalCode not in scheduleDict[station_key]['info']['postalCodes'] : 
                         scheduleDict[station_key]['info']['postalCodes'].append(thisPostalCode)
-                    additionalEvents = parseEvents( scheduleDict[station_key]['events'] , \
-                                                    station['events'],\
-                                                    xConfig['language'], \
-                                                    cacheDir)
+                    additionalEvents = parseEvents( cacheDir, \
+                                                    scheduleDict[station_key]['events'] , \
+                                                    station['events'], \
+                                                    xConfig['language'] )
 #                    print (" size of events before adding the parsed events ", len(scheduleDict[station_key]['events']))
 #                    print ("Size of events returned ", len(additionalEvents))
                     for newEvent in additionalEvents : 
@@ -852,10 +1000,18 @@ if __name__ == '__main__':
     xmlroot =  printXMLEvents(xmlroot , scheduleDict)
 
     if 'outfile' not in arglineDict : 
-        xmlfile = os.path.join(userdata, xConfig['outfile'])
+        xmlfile =  PurePath(userdata).joinpath(xConfig['outfile'])
     else :    
-        xmlfile = os.path.join(userdata, arglineDict['outfile'])
+        xmlfile = PurePath(userdata).joinpath(arglineDict['outfile'])
     xmlencoding = 'utf-8'
     printXMLFooter(xmlroot,  xmlfile, xmlencoding)
+
+### Clean up all files in the cache directory that are older than <retrieve days> old. 
+### We're cleaning up those because they can't possibly have a future episode in them any more after 
+### <retrieve days> old. and if they don't and we have something in the grid, it will get refreshed anyways
+### which means it will sit around for <retrieve_days> again until it's pushed out.
+    
+    purgeoldshowfiles(cacheDir, xConfig['retrieve_days'] )
+
 
     sys.exit(0)
